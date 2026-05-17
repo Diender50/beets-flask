@@ -257,10 +257,28 @@ export interface Artist {
     artist: string;
     album_count: number;
     item_count: number;
+    total_size: number;
     last_item_added?: Date;
     last_album_added?: Date;
     first_item_added?: Date;
     first_album_added?: Date;
+    /** True when the artist is only followed (not in the beets library). */
+    followed?: boolean;
+}
+
+export interface MissingAlbum {
+    album: string;
+    year?: number;
+    mb_releasegroupid?: string;
+    release_type?: string;
+    cover_url?: string;
+    track_count?: number;
+}
+
+export interface MissingAlbumTrack {
+    title: string;
+    duration?: number; // seconds
+    track_position?: number;
 }
 
 // List of all artists
@@ -340,6 +358,27 @@ export const itemsByArtistQueryOptions = <Minimal extends boolean>(
         const response = await fetch(url);
         return (await response.json()) as Item<typeof minimal>[];
     },
+});
+
+// Missing albums for a specific artist via beets missing plugin
+export const missingAlbumsByArtistQueryOptions = (name: string) => ({
+    queryKey: ['artist', name, 'missing_albums'],
+    queryFn: async (): Promise<MissingAlbum[]> => {
+        const response = await fetch(`/library/artists/${name}/missing`);
+        return (await response.json()) as MissingAlbum[];
+    },
+});
+
+// Tracklist for a missing album (by Deezer ID or MusicBrainz release group UUID)
+export const missingAlbumTracksQueryOptions = (releaseId: string) => ({
+    queryKey: ['missingAlbumTracks', releaseId],
+    queryFn: async (): Promise<MissingAlbumTrack[]> => {
+        const response = await fetch(
+            `/library/missing-album-tracks?id=${encodeURIComponent(releaseId)}`
+        );
+        return (await response.json()) as MissingAlbumTrack[];
+    },
+    enabled: !!releaseId,
 });
 
 /* --------------------------------- Artwork -------------------------------- */

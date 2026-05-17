@@ -1,16 +1,41 @@
 import { useMemo, useState } from 'react';
-import { List, ListProps } from 'react-window';
-import { Box, BoxProps, Divider, Typography, useTheme } from '@mui/material';
-import { useSuspenseQuery } from '@tanstack/react-query';
+import {
+    Box,
+    BoxProps,
+    Button,
+    CircularProgress,
+    Dialog,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    IconButton,
+    InputAdornment,
+    List,
+    ListItem,
+    ListItemAvatar,
+    ListItemText,
+    Avatar,
+    TextField,
+    Tooltip,
+    Typography,
+    useTheme,
+} from '@mui/material';
+import { UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 
 import { Artist, artistsQueryOptions } from '@/api/library';
 import {
-    ArtistBrowserProps,
-    ArtistListRow,
-} from '@/components/common/browser/artists';
+    ArtistSearchResult,
+    FollowedArtist,
+    followArtist,
+    followedArtistsQueryOptions,
+    searchArtists,
+    unfollowArtist,
+} from '@/api/discovery';
 import { ArtistIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
+import { ArtistsTable } from '@/components/common/browser/artistsTable';
 
 export const Route = createFileRoute('/library/browse/artists/')({
     loader: async (opts) => {
@@ -20,11 +45,35 @@ export const Route = createFileRoute('/library/browse/artists/')({
 });
 
 function RouteComponent() {
-    const { data: artists } = useSuspenseQuery(artistsQueryOptions());
+    const { data: libraryArtists } = useSuspenseQuery(artistsQueryOptions());
+    const { data: followedArtists = [] } = useQuery(followedArtistsQueryOptions());
+
+    const [followDialogOpen, setFollowDialogOpen] = useState(false);
+
+    // Merge: library artists + followed artists not already in library
+    const libraryNames = useMemo(
+        () => new Set(libraryArtists.map((a) => a.artist.toLowerCase())),
+        [libraryArtists]
+    );
+
+    const mergedArtists: Artist[] = useMemo(() => {
+        const followedOnly: Artist[] = followedArtists
+            .filter((f) => !libraryNames.has(f.name.toLowerCase()))
+            .map((f) => ({
+                artist: f.name,
+                album_count: 0,
+                item_count: 0,
+                total_size: 0,
+                followed: true,
+            }));
+        return [...libraryArtists, ...followedOnly];
+    }, [libraryArtists, followedArtists, libraryNames]);
+
     return (
         <>
             <ArtistsHeader
-                nArtists={artists.length}
+                nArtists={mergedArtists.length}
+                onAddArtist={() => setFollowDialogOpen(true)}
                 sx={(theme) => ({
                     [theme.breakpoints.down('laptop')]: {
                         background: `linear-gradient(to bottom, transparent 0%, ${theme.palette.background.paper} 100%)`,
@@ -33,7 +82,7 @@ function RouteComponent() {
             />
             <Divider sx={{ backgroundColor: 'primary.muted' }} />
             <ArtistsListWrapper
-                artists={artists}
+                artists={mergedArtists}
                 sx={(theme) => ({
                     display: 'flex',
                     flexDirection: 'column',
@@ -44,15 +93,21 @@ function RouteComponent() {
                     },
                 })}
             />
+            <FollowArtistDialog
+                open={followDialogOpen}
+                onClose={() => setFollowDialogOpen(false)}
+                followedArtists={followedArtists}
+            />
         </>
     );
 }
 
 function ArtistsHeader({
     nArtists,
+    onAddArtist,
     sx,
     ...props
-}: { nArtists: number } & BoxProps) {
+}: { nArtists: number; onAddArtist: () => void } & BoxProps) {
     const theme = useTheme();
     return (
         <Box
@@ -71,7 +126,7 @@ function ArtistsHeader({
             <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
                 <ArtistIcon size={40} color={theme.palette.primary.main} />
             </Box>
-            <Box>
+            <Box sx={{ flex: '1 1 auto' }}>
                 <Typography variant="h5" fontWeight="bold" lineHeight={1}>
                     Browse Artists
                 </Typography>
@@ -79,6 +134,16 @@ function ArtistsHeader({
                     {nArtists} unique artists
                 </Typography>
             </Box>
+            <Tooltip title="Follow artist">
+                <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<UserRoundPlusIcon size={16} />}
+                    onClick={onAddArtist}
+                >
+                    Follow Artist
+                </Button>
+            </Tooltip>
         </Box>
     );
 }
@@ -94,7 +159,6 @@ function ArtistsListWrapper({
             return artists;
         }
         return artists.filter((item) => {
-            //filtered or selected
             return item.artist?.toLowerCase().includes(filter.toLowerCase());
         });
     }, [artists, filter]);
@@ -138,40 +202,196 @@ function ArtistsListWrapper({
             </Box>
             <Box
                 sx={{
-                    overflow: 'visible',
+                    overflow: 'auto',
                     flex: '1 1 auto',
                     paddingInline: 2,
                     minHeight: 0,
                 }}
             >
-                <ArtistsList
-                    data={{ artists: filteredData, total: artists.length }}
-                />
+                <ArtistsTable artists={filteredData} />
             </Box>
         </Box>
     );
 }
 
-function ArtistsList({
-    data,
-    ...props
+/* ─────────────────────── Follow Artist Dialog ───────────────────────── */
+
+function FollowArtistDialog({
+    open,
+    onClose,
+    followedArtists,
 }: {
-    data?: {
-        artists: Array<Artist>;
-        total: number;
+    open: boolean;
+    onClose: () => void;
+    followedArtists: FollowedArtist[];
+}) {
+    const [query, setQuery] = useState('');
+    const [results, setResults] = useState<ArtistSearchResult[]>([]);
+    const [searching, setSearching] = useState(false);
+    const [searchError, setSearchError] = useState<string | null>(null);
+    const queryClient = useQueryClient();
+
+    const followedNames = useMemo(
+        () => new Set(followedArtists.map((a) => a.name.toLowerCase())),
+        [followedArtists]
+    );
+
+    const followMutation = useMutation({
+        mutationFn: (name: string) => followArtist(name),
+        onSuccess: (_data, name) => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            // Update result list to reflect follow state
+            setResults((prev) =>
+                prev.map((r) =>
+                    r.name.toLowerCase() === name.toLowerCase()
+                        ? { ...r, followed: true }
+                        : r
+                )
+            );
+        },
+    });
+
+    const unfollowMutation = useMutation({
+        mutationFn: (name: string) => unfollowArtist(name),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+    });
+
+    const handleSearch = async () => {
+        if (!query.trim()) return;
+        setSearching(true);
+        setSearchError(null);
+        try {
+            const data = await searchArtists(query.trim());
+            setResults(data);
+        } catch (err) {
+            setSearchError(err instanceof Error ? err.message : String(err));
+            setResults([]);
+        } finally {
+            setSearching(false);
+        }
     };
-} & Omit<
-    ListProps<ArtistBrowserProps>,
-    'rowProps' | 'rowCount' | 'rowHeight' | 'rowComponent'
->) {
+
+    const handleClose = () => {
+        setQuery('');
+        setResults([]);
+        setSearchError(null);
+        onClose();
+    };
+
     return (
-        <List
-            rowProps={{ artists: data?.artists || [] }}
-            rowCount={data?.total || 0}
-            rowHeight={50}
-            overscanCount={50}
-            rowComponent={ArtistListRow}
-            {...props}
-        />
+        <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
+            <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <UserRoundPlusIcon size={20} />
+                Follow Artist
+            </DialogTitle>
+            <DialogContent>
+                <Box sx={{ display: 'flex', gap: 1, mb: 2, mt: 0.5 }}>
+                    <TextField
+                        size="small"
+                        placeholder="Search artist name…"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') void handleSearch();
+                        }}
+                        fullWidth
+                        InputProps={{
+                            startAdornment: (
+                                <InputAdornment position="start">
+                                    <SearchIcon size={16} />
+                                </InputAdornment>
+                            ),
+                        }}
+                        autoFocus
+                    />
+                    <Button
+                        variant="contained"
+                        onClick={() => void handleSearch()}
+                        disabled={searching || !query.trim()}
+                        sx={{ whiteSpace: 'nowrap' }}
+                    >
+                        {searching ? <CircularProgress size={16} /> : 'Search'}
+                    </Button>
+                </Box>
+                {results.length > 0 && (
+                    <List dense disablePadding>
+                        {results.map((artist) => {
+                            const isFollowed =
+                                artist.followed ||
+                                followedNames.has(artist.name.toLowerCase());
+                            return (
+                                <ListItem
+                                    key={artist.id}
+                                    secondaryAction={
+                                        isFollowed ? (
+                                            <Tooltip title="Unfollow">
+                                                <IconButton
+                                                    size="small"
+                                                    color="success"
+                                                    onClick={() =>
+                                                        unfollowMutation.mutate(artist.name)
+                                                    }
+                                                >
+                                                    <CheckIcon size={16} />
+                                                </IconButton>
+                                            </Tooltip>
+                                        ) : (
+                                            <Tooltip title="Follow">
+                                                <IconButton
+                                                    size="small"
+                                                    onClick={() =>
+                                                        followMutation.mutate(artist.name)
+                                                    }
+                                                >
+                                                    <UserRoundPlusIcon size={16} />
+                                                </IconButton>
+                                            </Tooltip>
+                                        )
+                                    }
+                                    disablePadding
+                                    sx={{ py: 0.5 }}
+                                >
+                                    <ListItemAvatar sx={{ minWidth: 44 }}>
+                                        <Avatar sx={{ width: 36, height: 36 }}>
+                                            {artist.name.charAt(0).toUpperCase()}
+                                        </Avatar>
+                                    </ListItemAvatar>
+                                    <ListItemText
+                                        primary={artist.name}
+                                        secondary={
+                                            [artist.disambiguation, artist.country]
+                                                .filter(Boolean)
+                                                .join(' · ') || undefined
+                                        }
+                                    />
+                                </ListItem>
+                            );
+                        })}
+                    </List>
+                )}
+                {searchError && (
+                    <Typography
+                        variant="body2"
+                        color="error"
+                        textAlign="center"
+                        sx={{ py: 2 }}
+                    >
+                        {searchError}
+                    </Typography>
+                )}
+                {results.length === 0 && !searching && !searchError && query && (
+                    <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        textAlign="center"
+                        sx={{ py: 2 }}
+                    >
+                        No results. Try a different name.
+                    </Typography>
+                )}
+            </DialogContent>
+        </Dialog>
     );
 }

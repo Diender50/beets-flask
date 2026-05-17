@@ -16,7 +16,11 @@ if [ ! -z "$USER_ID" ] && [ ! -z "$GROUP_ID" ]; then
     log "User beetle now has $(id beetle)"
     find /home/beetle ! -user beetle -exec chown beetle:beetle {} +
     find /logs ! -user beetle -exec chown beetle:beetle {} +
-    find /repo ! -user beetle -exec chown beetle:beetle {} +
+    if [ "$BEETSFLASK_SKIP_REPO_CHOWN" = "1" ]; then
+        log "Skipping /repo ownership fix (BEETSFLASK_SKIP_REPO_CHOWN=1)"
+    else
+        find /repo ! -user beetle -exec chown beetle:beetle {} +
+    fi
     log "Done fixing permissions"
 else
     log "No USER_ID and GROUP_ID set, skipping permission updates"

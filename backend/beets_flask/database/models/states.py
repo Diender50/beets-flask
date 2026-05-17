@@ -50,6 +50,21 @@ from beets_flask.logger import log
 from beets_flask.server.exceptions import SerializedException
 
 
+class FollowedArtistInDb(Base):
+    """Persistent record of a followed artist (not necessarily in the beets library)."""
+
+    __tablename__ = "followed_artist"
+
+    # Base already provides `id` (uuid PK); name is unique and used as lookup key.
+    name: Mapped[str] = mapped_column(unique=True, index=True, nullable=False)
+    added_at: Mapped[str] = mapped_column()  # ISO-8601 string
+
+    def __init__(self, name: str, added_at: str):
+        super().__init__()
+        self.name = name
+        self.added_at = added_at
+
+
 class FolderInDb(Base):
     """Represents a folder on disk, to keep track of changes.
 

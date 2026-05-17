@@ -5,6 +5,7 @@
  */
 export type File = FileSystemItem;
 
+
 export interface SerializedSessionState {
     id: string;
     created_at: Date;
@@ -46,7 +47,7 @@ export interface JobStatusUpdate {
     num_jobs: number;
     job_metas: Array<JobMeta>;
     exc: SerializedException | null;
-    event: 'job_status_update';
+    event: "job_status_update";
 }
 
 export interface InboxStats {
@@ -64,7 +65,7 @@ export interface FolderStatusUpdate {
     hash: string;
     status: FolderStatus;
     exc: SerializedException | null;
-    event: 'folder_status_update';
+    event: "folder_status_update";
 }
 
 export interface Folder extends FileSystemItem {
@@ -73,7 +74,7 @@ export interface Folder extends FileSystemItem {
 
 export interface FileSystemUpdate {
     exc: SerializedException | null;
-    event: 'file_system_update';
+    event: "file_system_update";
 }
 
 export interface Archive extends FileSystemItem {
@@ -86,10 +87,10 @@ export interface AlbumResponseMinimalExpanded {
     albumartist: string;
     year: number;
     added: Date;
+    albumtype?: string;
     items: Array<ItemResponseMinimal>;
     gui_import_id?: string;
     gui_import_date?: string;
-    albumtype?: string;
 }
 
 export interface AlbumResponseMinimal {
@@ -98,6 +99,7 @@ export interface AlbumResponseMinimal {
     albumartist: string;
     year: number;
     added: Date;
+    albumtype?: string;
 }
 
 export interface AlbumResponseExpanded {
@@ -106,13 +108,13 @@ export interface AlbumResponseExpanded {
     albumartist: string;
     year: number;
     added: Date;
+    albumtype?: string;
     genre: string;
     label: string;
     sources: Array<AlbumSource>;
     items: Array<ItemResponse>;
     gui_import_id?: string;
     gui_import_date?: string;
-    albumtype?: string;
 }
 
 export interface AlbumResponse {
@@ -121,6 +123,7 @@ export interface AlbumResponse {
     albumartist: string;
     year: number;
     added: Date;
+    albumtype?: string;
     genre: string;
     label: string;
     sources: Array<AlbumSource>;
@@ -283,7 +286,7 @@ export interface ItemResponse {
 }
 
 export interface MusicInfo {
-    type: 'album' | 'item' | 'track';
+    type: "album" | "item" | "track";
     artist: null | string;
     album: null | string;
     data_url: null | string;
@@ -304,7 +307,7 @@ export interface ItemInfo extends MusicInfo {
 }
 
 export interface FileSystemItem {
-    type: 'archive' | 'directory' | 'file';
+    type: "archive" | "directory" | "file";
     full_path: string;
     hash: string;
     is_album: boolean;
@@ -333,3 +336,4 @@ export interface AlbumInfo extends MusicInfo {
     catalognum: null | string;
     albumdisambig: null | string;
 }
+

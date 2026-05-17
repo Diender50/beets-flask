@@ -144,6 +144,88 @@ class TestArtistsEndpoint(IsolatedBeetsLibraryMixin):
                 "Data artist does not match requested artist without separators"
             )
 
+    async def test_missing_albums_are_scoped_to_exact_artist(self, client: Client):
+        with mock.patch(
+            "beets_flask.server.routes.library.artists._missing_albums_from_sources",
+            return_value=[
+                {
+                    "album": "Guest Missing",
+                    "year": 2026,
+                    "mb_releasegroupid": "guest-releasegroup",
+                    "release_type": "album",
+                }
+            ],
+        ) as mocked_missing:
+            response = await client.get(
+                "/api_v1/library/artists/Guest%20Artist/missing"
+            )
+
+        data = await response.get_json()
+
+        assert response.status_code == 200, "Response status code is not 200"
+        assert data == [
+            {
+                "album": "Guest Missing",
+                "year": 2026,
+                "mb_releasegroupid": "guest-releasegroup",
+                "release_type": "album",
+            }
+        ], "Missing albums should only include exact matches for the requested artist"
+        mocked_missing.assert_called_once_with("Guest Artist")
+
+    async def test_featured_artist_without_albumartist_uses_artist_mbids(self, client: Client):
+        featured_album = beets_lib_album(
+            albumartist="Lead Artist",
+            mb_releasegroupid="owned-releasegroup",
+        )
+        self.beets_lib.add(featured_album)
+        self.beets_lib.add(
+            beets_lib_item(
+                album_id=featured_album.id,
+                artist="Lead Artist feat. Guest Artist",
+                albumartist="Lead Artist",
+                album="Collab Album",
+                mb_artistids=[
+                    "lead-artist-mbid",
+                    "guest-artist-mbid",
+                ],
+                mb_artistid="lead-artist-mbid",
+                mb_albumartistid="lead-artist-mbid",
+            )
+        )
+
+        with mock.patch(
+            "beets_flask.server.routes.library.artists.musicbrainzngs.browse_release_groups",
+            return_value={
+                "release-group-list": [
+                    {
+                        "id": "guest-releasegroup",
+                        "title": "Guest Album",
+                        "first-release-date": "2024-05-01",
+                        "primary-type": "Album",
+                    }
+                ]
+            },
+        ), mock.patch(
+            "beets_flask.server.routes.library.artists._missing_albums_from_deezer",
+            return_value=[],
+        ):
+            response = await client.get(
+                "/api_v1/library/artists/Guest%20Artist/missing"
+            )
+
+        data = await response.get_json()
+
+        assert response.status_code == 200, "Response status code is not 200"
+        assert data == [
+            {
+                "album": "Guest Album",
+                "year": 2024,
+                "mb_releasegroupid": "guest-releasegroup",
+                "release_type": "album",
+            }
+        ], "Featured artist should get missing albums from exact artist MBIDs even without owned albums"
+
 
 # ----------------------------------- album ---------------------------------- #
 

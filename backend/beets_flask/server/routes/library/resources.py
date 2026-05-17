@@ -742,6 +742,8 @@ class AlbumResponseMinimal(TypedDict):
     year: int
     # Date the album was added to the library
     added: datetime.datetime
+    # Album type (album, ep, single, etc.) — may be absent if plugin not enabled
+    albumtype: NotRequired[str]
 
 
 class AlbumResponseMinimalExpanded(AlbumResponseMinimal):
@@ -802,7 +804,7 @@ def _rep_Album(
     out: dict[str, Any] = dict()
 
     if minimal:
-        keys = ["id", "name", "albumartist", "year", "added"]
+        keys = ["id", "name", "albumartist", "year", "added", "albumtype"]
     else:
         # Use all keys
         keys = album.keys() + ["name"]

@@ -1,4 +1,4 @@
-import { Home, Inbox, Library, Search, Terminal } from 'lucide-react';
+import { Home, Inbox, Library, Search, Terminal, Users } from 'lucide-react';
 import { MouseEvent, ReactElement, useRef } from 'react';
 import { Box, BoxProps, darken, Typography, useTheme } from '@mui/material';
 import { styled } from '@mui/material/styles';
@@ -47,7 +47,7 @@ const StyledTabs = styled(Tabs)(({ theme }) => ({
         '& .MuiTabs-list': {
             width: 'auto',
             display: 'grid',
-            gridTemplateColumns: 'repeat(5, 1fr)',
+            gridTemplateColumns: 'repeat(6, 1fr)',
             gridTemplateRows: '1fr',
             alignItems: 'center',
             justifyItems: 'center',
@@ -146,7 +146,13 @@ function NavTabs() {
 
     // only needed temporarily until search gets an icon in the toolbar!
     if (basePath === 'library') {
-        basePath += '/' + location.pathname.split('/')[2];
+        const sub = location.pathname.split('/')[2];
+        const subsub = location.pathname.split('/')[3];
+        if (sub === 'browse' && subsub === 'artists') {
+            basePath = 'library/browse/artists';
+        } else {
+            basePath += '/' + sub;
+        }
     }
 
     const navItems = [
@@ -154,6 +160,7 @@ function NavTabs() {
         { label: 'Inbox', icon: <Inbox />, to: '/inbox' as const },
         //{ label: "Session", icon: <Inbox />, to: "/sessiondraft" as const },
         { label: 'Library', icon: <Library />, to: '/library/browse' as const },
+        { label: 'Artists', icon: <Users />, to: '/library/browse/artists' as const },
         { label: 'Search', icon: <Search />, to: '/library/search' as const },
         {
             label: '',

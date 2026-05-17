@@ -36,6 +36,7 @@ from beets_flask.importer.session import (
     delete_from_beets,
 )
 from beets_flask.importer.types import DuplicateAction
+from beets_flask.library_cache import invalidate_artists_cache
 from beets_flask.logger import log
 from beets_flask.redis import import_queue, preview_queue
 from beets_flask.server.exceptions import (
@@ -539,6 +540,7 @@ async def run_import_candidate(
             db_session.merge(instance=s_state_indb)
             db_session.commit()
 
+            invalidate_artists_cache()
     log.info(f"Import candidate done. {hash=} {path=}")
 
 
@@ -568,6 +570,7 @@ async def run_import_auto(
             db_session.merge(instance=s_state_indb)
             db_session.commit()
 
+            invalidate_artists_cache()
     log.info(f"Auto Import done. {hash=} {path=}")
 
 
@@ -592,6 +595,7 @@ async def run_import_bootleg(hash: str, path: str):
             db_session.merge(instance=s_state_indb)
             db_session.commit()
 
+            invalidate_artists_cache()
     log.info(f"Bootleg Import done. {hash=} {path=}")
 
 
@@ -611,6 +615,7 @@ async def run_import_undo(hash: str, path: str, delete_files: bool):
             db_session.merge(instance=s_state_indb)
             db_session.commit()
 
+            invalidate_artists_cache()
     log.info(f"Import Undo done. {hash=} {path=}")
 
 

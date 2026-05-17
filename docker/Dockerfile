@@ -1,5 +1,7 @@
 FROM python:3.11-alpine3.20 AS base
 
+ARG NODE_VERSION=22.12.0
+
 FROM base AS deps
 
 
@@ -36,7 +38,16 @@ RUN --mount=type=cache,target=/var/cache/apk \
     tmux \
     shadow \
     git \
-    ffmpeg
+    ffmpeg \
+    curl \
+    xz
+
+# Vite 7 requires Node >=20.19 or >=22.12. Alpine 3.20 packages currently ship
+# unsupported Node versions for this project, so we install a pinned musl build.
+RUN curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64-musl.tar.xz" \
+    | tar -xJ -C /usr/local --strip-components=1
+
+RUN node --version && npm --version
 
 
 # Install backend dependencies
@@ -76,10 +87,6 @@ RUN python -c "import tomllib; print(tomllib.load(open('/repo/backend/pyproject.
 
 FROM deps AS dev
 
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add \
-    npm
-
 RUN npm install -g pnpm
 RUN pnpm config set store-dir /repo/frontend/.pnpm-store
 
@@ -113,10 +120,6 @@ ENTRYPOINT [ \
 
 FROM deps AS build
 # Build frontend files
-
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add \
-    npm
 
 RUN npm install -g pnpm
 RUN pnpm config set store-dir /repo/frontend/.pnpm-store
