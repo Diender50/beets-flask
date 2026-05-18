@@ -175,6 +175,13 @@ def _squidwtf_settings() -> dict:
     }
 
 
+def _musicbrainz_api_base_url() -> str:
+    return _cfg_str(
+        ["gui", "discovery", "musicbrainz", "base_url"],
+        "https://musicbrainz.org/ws/2",
+    ).rstrip("/")
+
+
 def _download_suggestion_summary(*, provider: str, score: float, title: str, artist: str, details: dict) -> dict:
     return {
         "provider": provider,
@@ -196,7 +203,8 @@ async def search_artists():
     if not q:
         return jsonify({"error": "q is required"}), 400
 
-    url = f"https://musicbrainz.org/ws/2/artist?query={quote(q)}&limit=15&fmt=json"
+    base_url = _musicbrainz_api_base_url()
+    url = f"{base_url}/artist?query={quote(q)}&limit=15&fmt=json"
     headers = {"User-Agent": "beets-flask/1.0 ( https://github.com/pSpitzner/beets-flask )"}
     try:
         async with aiohttp.ClientSession() as session:

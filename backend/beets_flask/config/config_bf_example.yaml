@@ -47,6 +47,11 @@ gui:
     discovery:
         # Phase 3 provider integration uses user-managed containers/services.
         # Map provider download output to one beets-flask inbox folder path.
+        musicbrainz:
+            # Set this to your self-hosted MusicBrainz API endpoint if needed.
+            # Default public endpoint:
+            base_url: "https://musicbrainz.org/ws/2"
+
         deemix:
             base_url: "http://deemix:6595"
             auth_header: ""

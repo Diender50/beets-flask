@@ -22,6 +22,11 @@ gui:
         expand_files: no
 
     discovery:
+        musicbrainz:
+            # MusicBrainz API base URL (set this for self-hosted instances).
+            # Example: "https://musicbrainz.yourdomain.tld/ws/2"
+            base_url: "https://musicbrainz.org/ws/2"
+
         deemix:
             # User-managed docker/service endpoint. Example: "http://deemix:6595"
             base_url: "http://deemix:6595"

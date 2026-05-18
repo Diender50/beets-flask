@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from typing import TYPE_CHECKING
 
+from urllib.parse import urlparse
 import musicbrainzngs
 import pandas as pd
 from quart import Blueprint, Response, g, jsonify, request
@@ -53,6 +54,35 @@ MISSING_CACHE_TTL_SECONDS = 3600
 _MUSICBRAINZ_ID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
 )
+
+
+def _musicbrainz_api_base_url() -> str:
+    try:
+        return (
+            str(
+                get_config()["gui"]["discovery"]["musicbrainz"]["base_url"].get(
+                    "https://musicbrainz.org/ws/2"
+                )
+            )
+            .strip()
+            .rstrip("/")
+        )
+    except Exception:
+        return "https://musicbrainz.org/ws/2"
+
+
+def _configure_musicbrainz_client() -> None:
+    base_url = _musicbrainz_api_base_url()
+    parsed = urlparse(base_url)
+
+    hostname = parsed.netloc or parsed.path
+    use_https = parsed.scheme.casefold() != "http"
+
+    if not hostname:
+        hostname = "musicbrainz.org"
+        use_https = True
+
+    musicbrainzngs.set_hostname(hostname, use_https=use_https)
 
 
 def _artists_cache_key(artist_name: str | None) -> str:
@@ -188,6 +218,7 @@ def _owned_release_group_ids(artist_name: str) -> set[str]:
             continue
 
         release_group_id = getattr(album, "mb_releasegroupid", None)
+
         if release_group_id:
             release_group_ids.add(str(release_group_id))
 
@@ -236,6 +267,7 @@ def _normalize_for_dedup(title: str) -> str:
         t,
         flags=re.IGNORECASE,
     )
+
     # Collapse & trim trailing whitespace/punctuation
     return re.sub(r"[\s\-_:]+$", "", t).strip()
 
@@ -260,6 +292,7 @@ def _owned_album_titles_normalized(artist_name: str) -> set[str]:
             continue
         album_title = getattr(album, "album", None)
         if album_title:
+
             titles.add(_normalize_for_dedup(str(album_title)))
 
     return titles
@@ -390,6 +423,7 @@ def _release_track_count_from_detail(release: dict) -> int | None:
 
 
 def _best_release_track_count_for_group(release_group_id: str) -> int | None:
+    _configure_musicbrainz_client()
     best_release = _pick_best_release_for_group(release_group_id)
     if best_release is None:
         return None
@@ -407,6 +441,7 @@ def _best_release_track_count_for_group(release_group_id: str) -> int | None:
 
 
 def _best_release_tracks_for_group(release_group_id: str) -> list[dict[str, str | int | None]]:
+    _configure_musicbrainz_client()
     best_release = _pick_best_release_for_group(release_group_id)
     if best_release is None:
         return []
@@ -430,6 +465,7 @@ def _best_release_tracks_for_group(release_group_id: str) -> list[dict[str, str 
 
 
 def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | int | None]]:
+    _configure_musicbrainz_client()
     artist_mbids = _find_artist_mbids(artist_name)
     if not artist_mbids:
         # Artist not in beets library — search MB by name
