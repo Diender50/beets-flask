@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { List } from 'react-window';
 import {
     Badge,
     Button,
@@ -32,7 +31,7 @@ import {
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, ExternalLinkIcon, RefreshCw, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 
 import {
     Album,
@@ -52,14 +51,9 @@ import {
     getDownloadSuggestions,
     startDownload,
 } from '@/api/discovery';
-import {
-    AlbumGridCell,
-    AlbumListRow,
-} from '@/components/common/browser/albums';
-import { ItemListRow } from '@/components/common/browser/items';
 import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
-import { DynamicFlowGrid, ViewToggle } from '@/components/common/table';
+import { CoverArt } from '@/components/library/coverArt';
 
 export const Route = createFileRoute('/library/browse/artists/$artist')({
     loader: async (opts) => {
@@ -201,10 +195,9 @@ function Viewer({
     artist: string;
 } & BoxProps) {
     const theme = useTheme();
-    const [selected, setSelected] = useState<'albums' | 'items' | 'missing'>(() =>
-        albums.length > 0 ? 'albums' : 'items'
+    const [selected, setSelected] = useState<'albums' | 'missing'>(() =>
+        albums.length > 0 ? 'albums' : 'missing'
     );
-    const [view, setView] = useState<'list' | 'grid'>('list');
     const [filter, setFilter] = useState('');
     const [albumTypeFilter, setAlbumTypeFilter] = useState<string | null>(null);
 
@@ -224,15 +217,6 @@ function Viewer({
         });
     }, [albums, filter, albumTypeFilter]);
 
-    const filteredItems = useMemo(() => {
-        if (!filter) {
-            return items;
-        }
-        return items.filter((item) => {
-            return item.name.toLowerCase().includes(filter.toLowerCase());
-        });
-    }, [items, filter]);
-
     const filteredMissingAlbums = useMemo(() => {
         if (!filter) {
             return missingAlbums;
@@ -242,17 +226,20 @@ function Viewer({
         });
     }, [missingAlbums, filter]);
 
+    const trackCountByAlbumId = useMemo(() => {
+        const map = new Map<number, number>();
+        for (const item of items) {
+            map.set(item.album_id, (map.get(item.album_id) ?? 0) + 1);
+        }
+        return map;
+    }, [items]);
+
     const nAlbumsRemovedByFilter = albums.length - filteredAlbums.length;
-    const nItemsRemovedByFilter = items.length - filteredItems.length;
     const nMissingRemovedByFilter =
         missingAlbums.length - filteredMissingAlbums.length;
 
     const nRemovedByFilter =
-        selected === 'albums'
-            ? nAlbumsRemovedByFilter
-            : selected === 'items'
-              ? nItemsRemovedByFilter
-              : nMissingRemovedByFilter;
+        selected === 'albums' ? nAlbumsRemovedByFilter : nMissingRemovedByFilter;
 
     return (
         <Box
@@ -304,7 +291,7 @@ function Viewer({
                             value={selected}
                             onChange={(
                                 _e: React.MouseEvent<HTMLElement>,
-                                v: 'albums' | 'items' | 'missing' | null
+                                v: 'albums' | 'missing' | null
                             ) => {
                                 if (v) setSelected(v);
                             }}
@@ -312,9 +299,6 @@ function Viewer({
                             exclusive
                             aria-label="Filter type"
                         >
-                            <ToggleButton value="items">
-                                <TrackIcon size={theme.iconSize.lg} />
-                            </ToggleButton>
                             <ToggleButton value="albums">
                                 <AlbumIcon size={theme.iconSize.lg} />
                             </ToggleButton>
@@ -331,11 +315,6 @@ function Viewer({
                                 </Badge>
                             </ToggleButton>
                         </ToggleButtonGroup>
-                        <ViewToggle
-                            view={view}
-                            setView={setView}
-                            sx={{ marginLeft: 'auto' }}
-                        />
                     </Box>
                 </Box>
                 {selected === 'albums' && albumTypes.length > 1 && (
@@ -381,9 +360,8 @@ function Viewer({
                     minHeight: 0,
                 }}
             >
-                {selected === 'items' && <ItemsViewer items={filteredItems} />}
                 {selected === 'albums' && (
-                    <AlbumsViewer albums={filteredAlbums} view={view} />
+                    <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} />
                 )}
                 {selected === 'missing' && (
                     <MissingAlbumsViewer albums={filteredMissingAlbums} artist={artist} />
@@ -395,11 +373,27 @@ function Viewer({
 
 function AlbumsViewer({
     albums,
-    view,
+    trackCountByAlbumId,
 }: {
     albums: Album<false, true>[];
-    view: 'list' | 'grid';
+    trackCountByAlbumId: Map<number, number>;
 }) {
+    const navigate = useNavigate();
+    const grouped = useMemo(() => {
+        const map = new Map<string, Album<false, true>[]>();
+        for (const album of albums) {
+            const type = album.albumtype ?? 'album';
+            if (!map.has(type)) map.set(type, []);
+            map.get(type)!.push(album);
+        }
+        return map;
+    }, [albums]);
+
+    const orderedTypes = [
+        ...RELEASE_TYPE_ORDER.filter((t) => grouped.has(t)),
+        ...[...grouped.keys()].filter((t) => !RELEASE_TYPE_ORDER.includes(t)),
+    ];
+
     if (albums.length === 0) {
         return (
             <Box
@@ -417,53 +411,76 @@ function AlbumsViewer({
         );
     }
 
-    if (view === 'grid') {
-        return (
-            <DynamicFlowGrid
-                cellProps={{ albums: albums }}
-                cellCount={albums.length}
-                cellHeight={150}
-                cellWidth={150}
-                cellComponent={AlbumGridCell}
-            />
-        );
-    }
     return (
-        <List
-            rowProps={{ albums, showArtist: false }}
-            rowCount={albums.length}
-            rowHeight={35}
-            rowComponent={AlbumListRow}
-        />
-    );
-}
-
-function ItemsViewer({ items }: { items: Item<true>[] }) {
-    if (items.length === 0) {
-        return (
-            <Box
-                sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100%',
-                }}
-            >
-                <Typography variant="body1" color="text.secondary">
-                    No items found.
-                </Typography>
-            </Box>
-        );
-    }
-
-    return (
-        <List
-            rowProps={{ items, showArtist: false }}
-            rowCount={items.length}
-            rowHeight={50}
-            overscanCount={50}
-            rowComponent={ItemListRow}
-        />
+        <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            {orderedTypes.map((type) => (
+                <Box key={type} sx={{ mb: 3 }}>
+                    <Typography
+                        variant="subtitle2"
+                        color="text.secondary"
+                        sx={{
+                            px: 1,
+                            py: 0.5,
+                            position: 'sticky',
+                            top: 0,
+                            zIndex: 1,
+                            backgroundColor: 'background.paper',
+                            borderBottom: 1,
+                            borderColor: 'divider',
+                        }}
+                    >
+                        {RELEASE_TYPE_LABELS[type] ?? type} ({grouped.get(type)!.length})
+                    </Typography>
+                    <Table size="small">
+                        <TableHead>
+                            <TableRow>
+                                <TableCell sx={{ width: 44 }} />
+                                <TableCell>Album</TableCell>
+                                <TableCell sx={{ width: 60 }} align="right">Tracks</TableCell>
+                                <TableCell sx={{ width: 60 }}>Year</TableCell>
+                            </TableRow>
+                        </TableHead>
+                        <TableBody>
+                            {grouped.get(type)!.map((album) => (
+                                <TableRow
+                                    key={album.id}
+                                    hover
+                                    sx={{ cursor: 'pointer' }}
+                                    onClick={() => void navigate({ to: '/library/album/$albumId', params: { albumId: album.id } })}
+                                >
+                                    <TableCell sx={{ p: 0.5, width: 44 }}>
+                                        <CoverArt
+                                            type="album"
+                                            beetsId={album.id}
+                                            sx={{
+                                                width: 36,
+                                                height: 36,
+                                                objectFit: 'cover',
+                                                borderRadius: 0.5,
+                                                display: 'block',
+                                            }}
+                                        />
+                                    </TableCell>
+                                    <TableCell>
+                                        <Link
+                                            to="/library/album/$albumId"
+                                            params={{ albumId: album.id }}
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            {album.name}
+                                        </Link>
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ color: 'text.secondary' }}>
+                                        {trackCountByAlbumId.get(album.id) ?? '-'}
+                                    </TableCell>
+                                    <TableCell>{album.year ?? '-'}</TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </Box>
+            ))}
+        </Box>
     );
 }
 
