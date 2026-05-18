@@ -16,6 +16,7 @@ import { Route as InboxIndexRouteImport } from './routes/inbox/index'
 import { Route as DebugIndexRouteImport } from './routes/debug/index'
 import { Route as FrontpageIndexRouteImport } from './routes/_frontpage/index'
 import { Route as LibrarySearchRouteImport } from './routes/library/search'
+import { Route as LibraryDiscoveryRouteImport } from './routes/library/discovery'
 import { Route as DebugSortable_multiRouteImport } from './routes/debug/sortable_multi'
 import { Route as DebugSortableRouteImport } from './routes/debug/sortable'
 import { Route as DebugJobsRouteImport } from './routes/debug/jobs'
@@ -74,6 +75,11 @@ const FrontpageIndexRoute = FrontpageIndexRouteImport.update({
 const LibrarySearchRoute = LibrarySearchRouteImport.update({
   id: '/library/search',
   path: '/library/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LibraryDiscoveryRoute = LibraryDiscoveryRouteImport.update({
+  id: '/library/discovery',
+  path: '/library/discovery',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DebugSortable_multiRoute = DebugSortable_multiRouteImport.update({
@@ -215,6 +221,7 @@ export interface FileRoutesByFullPath {
   '/debug/jobs': typeof DebugJobsRoute
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
+  '/library/discovery': typeof LibraryDiscoveryRoute
   '/library/search': typeof LibrarySearchRoute
   '/': typeof FrontpageIndexRoute
   '/debug': typeof DebugIndexRoute
@@ -248,6 +255,7 @@ export interface FileRoutesByTo {
   '/debug/jobs': typeof DebugJobsRoute
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
+  '/library/discovery': typeof LibraryDiscoveryRoute
   '/library/search': typeof LibrarySearchRoute
   '/': typeof FrontpageIndexRoute
   '/debug': typeof DebugIndexRoute
@@ -279,6 +287,7 @@ export interface FileRoutesById {
   '/debug/jobs': typeof DebugJobsRoute
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
+  '/library/discovery': typeof LibraryDiscoveryRoute
   '/library/search': typeof LibrarySearchRoute
   '/_frontpage/': typeof FrontpageIndexRoute
   '/debug/': typeof DebugIndexRoute
@@ -314,6 +323,7 @@ export interface FileRouteTypes {
     | '/debug/jobs'
     | '/debug/sortable'
     | '/debug/sortable_multi'
+    | '/library/discovery'
     | '/library/search'
     | '/'
     | '/debug'
@@ -347,6 +357,7 @@ export interface FileRouteTypes {
     | '/debug/jobs'
     | '/debug/sortable'
     | '/debug/sortable_multi'
+    | '/library/discovery'
     | '/library/search'
     | '/'
     | '/debug'
@@ -377,6 +388,7 @@ export interface FileRouteTypes {
     | '/debug/jobs'
     | '/debug/sortable'
     | '/debug/sortable_multi'
+    | '/library/discovery'
     | '/library/search'
     | '/_frontpage/'
     | '/debug/'
@@ -411,6 +423,7 @@ export interface RootRouteChildren {
   DebugJobsRoute: typeof DebugJobsRoute
   DebugSortableRoute: typeof DebugSortableRoute
   DebugSortable_multiRoute: typeof DebugSortable_multiRoute
+  LibraryDiscoveryRoute: typeof LibraryDiscoveryRoute
   LibrarySearchRoute: typeof LibrarySearchRoute
   FrontpageIndexRoute: typeof FrontpageIndexRoute
   DebugIndexRoute: typeof DebugIndexRoute
@@ -479,6 +492,13 @@ declare module '@tanstack/react-router' {
       path: '/library/search'
       fullPath: '/library/search'
       preLoaderRoute: typeof LibrarySearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library/discovery': {
+      id: '/library/discovery'
+      path: '/library/discovery'
+      fullPath: '/library/discovery'
+      preLoaderRoute: typeof LibraryDiscoveryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/debug/sortable_multi': {
@@ -716,6 +736,7 @@ const rootRouteChildren: RootRouteChildren = {
   DebugJobsRoute: DebugJobsRoute,
   DebugSortableRoute: DebugSortableRoute,
   DebugSortable_multiRoute: DebugSortable_multiRoute,
+  LibraryDiscoveryRoute: LibraryDiscoveryRoute,
   LibrarySearchRoute: LibrarySearchRoute,
   FrontpageIndexRoute: FrontpageIndexRoute,
   DebugIndexRoute: DebugIndexRoute,

@@ -1,4 +1,12 @@
-import { Home, Inbox, Library, Search, Terminal, Users } from 'lucide-react';
+import {
+    Compass,
+    Home,
+    Inbox,
+    Library,
+    Search,
+    Terminal,
+    Users,
+} from 'lucide-react';
 import { MouseEvent, ReactElement, useRef } from 'react';
 import { Box, BoxProps, darken, Typography, useTheme } from '@mui/material';
 import { styled } from '@mui/material/styles';
@@ -47,7 +55,7 @@ const StyledTabs = styled(Tabs)(({ theme }) => ({
         '& .MuiTabs-list': {
             width: 'auto',
             display: 'grid',
-            gridTemplateColumns: 'repeat(6, 1fr)',
+            gridTemplateColumns: 'repeat(var(--nav-item-count, 6), 1fr)',
             gridTemplateRows: '1fr',
             alignItems: 'center',
             justifyItems: 'center',
@@ -64,6 +72,12 @@ const StyledTabs = styled(Tabs)(({ theme }) => ({
 interface StyledTabProps
     extends Omit<LinkProps, 'children'>, Omit<TabProps, 'ref'> {
     label: string | ReactElement;
+}
+
+interface NavItemConfig {
+    label: string;
+    icon: ReactElement;
+    to: LinkProps['to'];
 }
 
 const StyledTab = styled(createLink(Tab))<StyledTabProps>(({ theme }) => ({
@@ -143,6 +157,20 @@ function NavTabs() {
     const theme = useTheme();
     const location = useRouterState({ select: (s) => s.location });
     let basePath = location.pathname.split('/')[1];
+    const navItems: NavItemConfig[] = [
+        { label: 'Home', icon: <Home />, to: '/' },
+        { label: 'Inbox', icon: <Inbox />, to: '/inbox' },
+        //{ label: "Session", icon: <Inbox />, to: "/sessiondraft" },
+        { label: 'Library', icon: <Library />, to: '/library/browse' },
+        { label: 'Artists', icon: <Users />, to: '/library/browse/artists' },
+        { label: 'Discover', icon: <Compass />, to: '/library/discovery' },
+        { label: 'Search', icon: <Search />, to: '/library/search' },
+        {
+            label: '',
+            icon: <Terminal stroke={theme.palette.primary.main} />,
+            to: '/terminal',
+        },
+    ];
 
     // only needed temporarily until search gets an icon in the toolbar!
     if (basePath === 'library') {
@@ -154,20 +182,6 @@ function NavTabs() {
             basePath += '/' + sub;
         }
     }
-
-    const navItems = [
-        { label: 'Home', icon: <Home />, to: '/' as const },
-        { label: 'Inbox', icon: <Inbox />, to: '/inbox' as const },
-        //{ label: "Session", icon: <Inbox />, to: "/sessiondraft" as const },
-        { label: 'Library', icon: <Library />, to: '/library/browse' as const },
-        { label: 'Artists', icon: <Users />, to: '/library/browse/artists' as const },
-        { label: 'Search', icon: <Search />, to: '/library/search' as const },
-        {
-            label: '',
-            icon: <Terminal stroke={theme.palette.primary.main} />,
-            to: '/terminal' as const,
-        },
-    ];
 
     const currentIdx = navItems.findIndex((item) => item.to === '/' + basePath);
     const ref = useRef<HTMLDivElement>(null);
@@ -182,6 +196,7 @@ function NavTabs() {
             ref={ref}
             value={currentIdx === -1 ? false : currentIdx}
             onMouseMove={handleMouseMove}
+            sx={{ '--nav-item-count': navItems.length }}
         >
             {navItems.map((item) => (
                 <NavItem key={item.to} {...item} />
