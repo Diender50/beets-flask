@@ -43,3 +43,20 @@ gui:
                 path: "/music/inbox_preview"
                 autotag: "preview"
                 # trigger tag but do not import, recommended for most control
+
+    discovery:
+        # Phase 3 provider integration uses user-managed containers/services.
+        # Map provider download output to one beets-flask inbox folder path.
+        deemix:
+            base_url: "http://deemix:6595"
+            auth_header: ""
+            timeout_seconds: 20
+
+        slskd:
+            base_url: "http://slskd:5030"
+            api_key: ""
+            timeout_seconds: 20
+
+        ranking:
+            mode: "balanced" # balanced | quality | speed
+            min_bitrate_kbps: 192

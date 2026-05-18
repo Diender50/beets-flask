@@ -1,14 +1,23 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { List } from 'react-window';
 import {
     Badge,
+    Button,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
     Box,
     BoxProps,
     Chip,
+    Alert,
     CircularProgress,
     Collapse,
     Divider,
     IconButton,
+    List as MuiList,
+    ListItemButton,
+    ListItemText,
     Table,
     TableBody,
     TableCell,
@@ -20,7 +29,8 @@ import {
     Typography,
     useTheme,
 } from '@mui/material';
-import { ChevronDownIcon, ChevronRightIcon, ExternalLinkIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, ExternalLinkIcon, RefreshCw, XCircleIcon } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
 
@@ -28,12 +38,20 @@ import {
     Album,
     albumsByArtistQueryOptions,
     artistQueryOptions,
+    fetchMissingAlbumsByArtist,
     Item,
     itemsByArtistQueryOptions,
     MissingAlbum,
     missingAlbumsByArtistQueryOptions,
     missingAlbumTracksQueryOptions,
 } from '@/api/library';
+import {
+    cleanupSlskdSearches,
+    DownloadSuggestion,
+    getDownloadJob,
+    getDownloadSuggestions,
+    startDownload,
+} from '@/api/discovery';
 import {
     AlbumGridCell,
     AlbumListRow,
@@ -89,6 +107,7 @@ function RouteComponent() {
                 albums={albums}
                 items={items}
                 missingAlbums={missingAlbums}
+                artist={params.artist}
                 sx={(theme) => ({
                     flex: '1 1 auto',
                     minHeight: 0,
@@ -172,12 +191,14 @@ function Viewer({
     albums,
     items,
     missingAlbums,
+    artist,
     sx,
     ...props
 }: {
     albums: Album<false, true>[];
     items: Item<true>[];
     missingAlbums: MissingAlbum[];
+    artist: string;
 } & BoxProps) {
     const theme = useTheme();
     const [selected, setSelected] = useState<'albums' | 'items' | 'missing'>(() =>
@@ -365,7 +386,7 @@ function Viewer({
                     <AlbumsViewer albums={filteredAlbums} view={view} />
                 )}
                 {selected === 'missing' && (
-                    <MissingAlbumsViewer albums={filteredMissingAlbums} />
+                    <MissingAlbumsViewer albums={filteredMissingAlbums} artist={artist} />
                 )}
             </Box>
         </Box>
@@ -536,22 +557,498 @@ function MissingAlbumTrackCount({ album }: { album: MissingAlbum }) {
     return <>-</>;
 }
 
-function MissingAlbumsViewer({ albums }: { albums: MissingAlbum[] }) {
+function useExpectedTrackCount(album: MissingAlbum): number | null {
+    const releaseId = album.mb_releasegroupid;
+    const isMusicBrainzRelease = !!releaseId && !releaseId.startsWith('deezer:');
+    const shouldFetchCount =
+        isMusicBrainzRelease && (album.track_count === null || album.track_count === undefined);
+
+    const { data: tracks } = useQuery({
+        ...missingAlbumTracksQueryOptions(releaseId ?? ''),
+        enabled: shouldFetchCount,
+    });
+
+    if (album.track_count !== null && album.track_count !== undefined) {
+        return album.track_count;
+    }
+    if (tracks && tracks.length > 0) {
+        return tracks.length;
+    }
+    return null;
+}
+
+function asNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+function trackMatchColor(resultTrackCount: number | null, expectedTrackCount: number | null) {
+    if (resultTrackCount === null || expectedTrackCount === null || expectedTrackCount <= 0) {
+        return 'text.secondary';
+    }
+    if (resultTrackCount === expectedTrackCount) {
+        return 'success.main';
+    }
+    if (resultTrackCount < expectedTrackCount * 0.7) {
+        return 'error.main';
+    }
+    return 'warning.main';
+}
+
+function speedMatchColor(
+    uploadSpeedBytes: number | null,
+    queueLength: number | null,
+    hasFreeUploadSlot: boolean,
+) {
+    void queueLength;
+    void hasFreeUploadSlot;
+    const speedMBs = uploadSpeedBytes !== null ? uploadSpeedBytes / 1_000_000 : null;
+    if (speedMBs === null) return 'text.secondary';
+    if (speedMBs < 1) return 'error.main';
+    if (speedMBs <= 5) return 'warning.main';
+    return 'success.main';
+}
+
+function queueMatchColor(queueLength: number | null) {
+    if (queueLength === null || queueLength <= 0) return 'text.secondary';
+    if (queueLength < 100) return 'warning.main';
+    return 'error.main';
+}
+
+function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string }) {
+    const deezerId = album.mb_releasegroupid?.startsWith('deezer:')
+        ? album.mb_releasegroupid.slice(7)
+        : undefined;
+    const releaseId = !deezerId ? (album.mb_releasegroupid ?? undefined) : undefined;
+    const expectedTrackCount = useExpectedTrackCount(album);
+    const [jobId, setJobId] = useState<string | null>(null);
+    const [open, setOpen] = useState(false);
+    const [searchCycle, setSearchCycle] = useState(0);
+    const [suggestionChoices, setSuggestionChoices] = useState<DownloadSuggestion[]>([]);
+    const [slskdLoading, setSlskdLoading] = useState(false);
+    const [deemixLoading, setDeemixLoading] = useState(false);
+    const [suggestionErrors, setSuggestionErrors] = useState<string[]>([]);
+    const searchAbortRef = useRef<AbortController[] | null>(null);
+
+    const cleanupSlskdSearchesForDialog = () => {
+        const searchIds = suggestionChoices
+            .filter((choice) => choice.provider === 'slskd')
+            .map((choice) => String(choice.details.searchId ?? ''))
+            .filter((value) => value.length > 0);
+        void cleanupSlskdSearches({
+            artist,
+            album: album.album,
+            searchIds,
+        }).catch(() => undefined);
+    };
+
+    const closeDialog = (opts?: { cleanupSlskd?: boolean }) => {
+        setOpen(false);
+        searchAbortRef.current?.forEach((ctrl) => ctrl.abort());
+        searchAbortRef.current = null;
+        if (opts?.cleanupSlskd !== false) {
+            cleanupSlskdSearchesForDialog();
+        }
+    };
+
+    const openDialog = () => {
+        setSearchCycle((prev) => prev + 1);
+        setOpen(true);
+    };
+
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const slskdCtrl = new AbortController();
+        const deemixCtrl = new AbortController();
+        // cancelled guards against React Strict Mode's double-invocation:
+        // the first effect run's async callbacks must not update state after
+        // the cleanup fires and the second run starts fresh.
+        let cancelled = false;
+
+        searchAbortRef.current = [slskdCtrl, deemixCtrl];
+
+        setSuggestionChoices([]);
+        setSuggestionErrors([]);
+        setSlskdLoading(true);
+        setDeemixLoading(true);
+
+        const mergeChoices = (incoming: DownloadSuggestion[]) => {
+            if (cancelled) return;
+            setSuggestionChoices((prev) => {
+                const merged = [...prev, ...incoming];
+                const seen = new Set<string>();
+                const deduped = merged.filter((choice) => {
+                    const key = `${choice.provider}:${String(choice.details.deezer_id ?? '')}:${String(choice.details.folder ?? '')}:${choice.title}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                });
+                deduped.sort((a, b) => b.score - a.score);
+                return deduped;
+            });
+        };
+
+        const runProvider = async (
+            provider: 'slskd' | 'deemix',
+            signal: AbortSignal,
+            setLoading: (v: boolean) => void,
+        ) => {
+            try {
+                const data = await getDownloadSuggestions({
+                    artist,
+                    album: album.album,
+                    provider,
+                    signal,
+                });
+                mergeChoices(data.results ?? []);
+            } catch (err) {
+                // Abort on popup close (or Strict Mode cleanup) should be silent.
+                if (err instanceof DOMException && err.name === 'AbortError') {
+                    return;
+                }
+                if (!cancelled) {
+                    setSuggestionErrors((prev) => [
+                        ...prev,
+                        `${provider}: ${(err as Error)?.message ?? 'request failed'}`,
+                    ]);
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
+
+        void runProvider('slskd', slskdCtrl.signal, setSlskdLoading);
+        void runProvider('deemix', deemixCtrl.signal, setDeemixLoading);
+
+        return () => {
+            cancelled = true;
+            slskdCtrl.abort();
+            deemixCtrl.abort();
+        };
+    }, [open, searchCycle, artist, album.album]);
+
+    const suggestionLoading = slskdLoading || deemixLoading;
+    const suggestionError = suggestionErrors.join(' | ');
+
+    const mutation = useMutation({
+        mutationFn: async (choice: DownloadSuggestion) => {
+            cleanupSlskdSearchesForDialog();
+            if (choice.provider === 'deemix') {
+                return startDownload({
+                    album: album.album,
+                    artist,
+                    provider: 'deemix',
+                    deezer_id: String(choice.details.deezer_id ?? deezerId ?? ''),
+                    release_id: releaseId,
+                });
+            }
+            return startDownload({
+                album: album.album,
+                artist,
+                provider: 'slskd',
+                candidate: choice.details.candidate as Record<string, unknown>,
+                release_id: releaseId,
+            });
+        },
+        onSuccess: (job) => {
+            setJobId(job.job_id);
+            closeDialog({ cleanupSlskd: false });
+        },
+    });
+
+    const { data: job } = useQuery({
+        queryKey: ['downloadJob', jobId],
+        queryFn: () => getDownloadJob(jobId ?? ''),
+        enabled: !!jobId,
+        refetchInterval: (query) => {
+            const status = query.state.data?.status;
+            return status === 'pending' || status === 'downloading' ? 2000 : false;
+        },
+    });
+
+    const currentJob = job ?? mutation.data ?? null;
+    const status = currentJob?.status;
+    const provider = currentJob?.provider ?? 'auto';
+    const selectedMatch = currentJob?.selected_match as Record<string, unknown> | null | undefined;
+    const candidateList = currentJob?.provider_candidates as Array<Record<string, unknown>> | null | undefined;
+    const stage = currentJob?.stage ?? null;
+    const progressMessage = currentJob?.progress_message ?? null;
+    const statusText =
+        status === 'pending'
+            ? 'Queued'
+            : status === 'downloading'
+              ? 'Working'
+              : status === 'done'
+                ? 'Done'
+                : status === 'error'
+                  ? 'Failed'
+                  : 'Ready';
+
+    const detailLines: string[] = [];
+    if (stage) detailLines.push(`step: ${stage}`);
+    if (progressMessage) detailLines.push(progressMessage);
+    if (currentJob?.selection_reason) detailLines.push(currentJob.selection_reason);
+    if (selectedMatch) {
+        const providerName = String(selectedMatch.provider ?? provider);
+        const label = providerName === 'deemix'
+            ? `deemix ${String(selectedMatch.deezer_id ?? '')}`.trim()
+            : `slskd ${String(selectedMatch.filename ?? '')}`.trim();
+        if (label.trim()) detailLines.push(`selected: ${label}`);
+        const score = selectedMatch.score;
+        if (typeof score === 'number') detailLines.push(`score: ${score.toFixed(3)}`);
+    }
+    if (candidateList?.length) {
+        detailLines.push(`probed: ${candidateList.filter((entry) => entry.ok).map((entry) => entry.provider).join(', ')}`);
+    }
+    if (currentJob?.error) detailLines.push(`error: ${currentJob.error}`);
+    if (currentJob?.output_path) detailLines.push(`dest: ${currentJob.output_path}`);
+
+    const tooltipTitle = mutation.isError
+        ? `Error: ${(mutation.error as Error)?.message ?? 'unknown'}`
+        : 'Choose best result';
+
+    const iconColor =
+        status === 'done' ? 'success' : status === 'error' ? 'error' : status ? 'warning' : 'default';
+
+    return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.25 }}>
+            <Tooltip title={tooltipTitle}>
+                <span>
+                    <IconButton
+                        size="small"
+                        onClick={openDialog}
+                        disabled={mutation.isPending || status === 'pending' || status === 'downloading'}
+                        color={iconColor}
+                    >
+                        {mutation.isPending || status === 'pending' || status === 'downloading' ? (
+                            <CircularProgress size={14} />
+                        ) : status === 'done' ? (
+                            <CheckIcon size={16} />
+                        ) : status === 'error' ? (
+                            <XCircleIcon size={16} />
+                        ) : (
+                            <DownloadIcon size={16} />
+                        )}
+                    </IconButton>
+                </span>
+            </Tooltip>
+            <Typography
+                variant="caption"
+                sx={{ lineHeight: 1, textAlign: 'center', color: status === 'error' ? 'error.main' : 'text.secondary' }}
+            >
+                {statusText}
+            </Typography>
+            <Box sx={{ width: 220, mt: 0.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                {detailLines.length > 0 && (
+                    <Alert
+                        severity={status === 'error' ? 'error' : status === 'done' ? 'success' : 'info'}
+                        variant="outlined"
+                        sx={{ p: 0.5, '.MuiAlert-message': { py: 0, width: '100%' } }}
+                    >
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                            {detailLines.slice(0, 4).map((line) => (
+                                <Typography key={line} variant="caption" sx={{ lineHeight: 1.2 }}>
+                                    {line}
+                                </Typography>
+                            ))}
+                        </Box>
+                    </Alert>
+                )}
+                {status === 'error' && currentJob?.error && (
+                    <Alert severity="error" variant="filled" sx={{ p: 0.5, '.MuiAlert-message': { py: 0, width: '100%' } }}>
+                        <Typography variant="caption" sx={{ lineHeight: 1.2 }}>
+                            {currentJob.error}
+                        </Typography>
+                    </Alert>
+                )}
+            </Box>
+            <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="md">
+                <DialogTitle>Choose download result</DialogTitle>
+                <DialogContent dividers>
+                    {suggestionLoading && suggestionChoices.length === 0 ? (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                            <CircularProgress size={24} />
+                        </Box>
+                    ) : suggestionChoices.length > 0 ? (
+                        <>
+                            {(deemixLoading || slskdLoading) && (
+                                <Alert severity="info" variant="outlined" sx={{ mb: 1 }}>
+                                    Searching {slskdLoading && deemixLoading
+                                        ? 'slskd and deemix'
+                                        : slskdLoading
+                                          ? 'slskd'
+                                          : 'deemix'}...
+                                </Alert>
+                            )}
+                        <MuiList disablePadding>
+                            {suggestionChoices.map((choice, index) => (
+                                (() => {
+                                    const resultTrackCount = choice.provider === 'deemix'
+                                        ? asNumber(choice.details.trackCount)
+                                        : asNumber(choice.details.audioFileCount);
+                                    const meanAudioBitrateKbps = choice.provider === 'slskd'
+                                        ? asNumber(choice.details.meanAudioBitrateKbps)
+                                        : null;
+                                    const uploadSpeed = choice.provider === 'slskd'
+                                        ? asNumber(choice.details.uploadSpeed)
+                                        : null;
+                                    const queueLength = choice.provider === 'slskd'
+                                        ? asNumber(choice.details.queueLength)
+                                        : null;
+                                    const hasFreeUploadSlot = Boolean(choice.details.hasFreeUploadSlot);
+                                    const container = choice.provider === 'deemix'
+                                        ? String(choice.details.container ?? '-')
+                                        : String(choice.details.extension ?? '-').toUpperCase();
+                                    const kbps = choice.provider === 'deemix'
+                                        ? asNumber(choice.details.kbps)
+                                        : meanAudioBitrateKbps;
+                                    const trackColor = trackMatchColor(resultTrackCount, expectedTrackCount);
+                                    const speedColor = speedMatchColor(uploadSpeed, queueLength, hasFreeUploadSlot);
+                                    const queueColor = queueMatchColor(queueLength);
+                                    return (
+                                <ListItemButton
+                                    key={`${choice.provider}-${choice.title}-${index}`}
+                                    onClick={() => mutation.mutate(choice)}
+                                    disabled={mutation.isPending}
+                                    sx={{
+                                        borderRadius: 1,
+                                        mb: 1,
+                                        border: 1,
+                                        borderColor: 'divider',
+                                        alignItems: 'flex-start',
+                                    }}
+                                >
+                                    <ListItemText
+                                        primary={
+                                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                <Typography variant="body2" fontWeight={700}>
+                                                    {choice.title}
+                                                </Typography>
+                                                <Chip size="small" label={choice.provider} color={choice.provider === 'deemix' ? 'primary' : 'secondary'} />
+                                                <Chip size="small" label={`score ${choice.score.toFixed(3)}`} variant="outlined" />
+                                            </Box>
+                                        }
+                                        secondary={
+                                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.5 }}>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {choice.artist}
+                                                </Typography>
+                                                {choice.provider === 'deemix' ? (
+                                                    <>
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            Deezer ID: {String(choice.details.deezer_id ?? '-')}
+                                                        </Typography>
+                                                        <Typography variant="caption" sx={{ color: trackColor }}>
+                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
+                                                            {container !== '-' ? ` • ${container}` : ''}
+                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
+                                                        </Typography>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            <Box component="span">
+                                                                User: {String(choice.details.username ?? '-')}
+                                                            </Box>
+                                                            {' • '}
+                                                            <Box component="span" sx={{ color: speedColor }}>
+                                                                Speed: {uploadSpeed !== null ? `${(uploadSpeed / 1_000_000).toFixed(1)} MB/s` : '-'}
+                                                            </Box>
+                                                            {' • '}
+                                                            <Box component="span" sx={{ color: queueColor }}>
+                                                                Queue: {queueLength ?? '-'}
+                                                            </Box>
+                                                        </Typography>
+                                                        <Typography variant="caption" sx={{ color: trackColor }}>
+                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
+                                                            {container !== '-' ? ` • ${container}` : ''}
+                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
+                                                        </Typography>
+                                                    </>
+                                                )}
+                                            </Box>
+                                        }
+                                    />
+                                </ListItemButton>
+                                    );
+                                })()
+                            ))}
+                        </MuiList>
+                        </>
+                    ) : suggestionError ? (
+                        <Alert severity="error" variant="outlined">
+                            {suggestionError || 'Could not load download results'}
+                        </Alert>
+                    ) : (
+                        <Alert severity="warning" variant="outlined">
+                            No result found in deemix or slskd.
+                        </Alert>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={closeDialog}>Close</Button>
+                </DialogActions>
+            </Dialog>
+        </Box>
+    );
+}
+
+function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artist: string }) {
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    const queryClient = useQueryClient();
+    const [refreshing, setRefreshing] = useState(false);
+
+    const handleRefresh = async () => {
+        console.log('[missing_albums] refresh click', { artist });
+        setRefreshing(true);
+        try {
+            const fresh = await fetchMissingAlbumsByArtist(artist, true);
+            queryClient.setQueryData(
+                missingAlbumsByArtistQueryOptions(artist).queryKey,
+                fresh
+            );
+            console.log('[missing_albums] refresh done', {
+                artist,
+                count: fresh.length,
+            });
+        } catch (error) {
+            console.error('[missing_albums] refresh failed', { artist, error });
+        } finally {
+            setRefreshing(false);
+        }
+    };
 
     if (albums.length === 0) {
         return (
             <Box
                 sx={{
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
+                    gap: 1,
                     height: '100%',
                 }}
             >
                 <Typography variant="body1" color="text.secondary">
                     No missing albums found.
                 </Typography>
+                <Tooltip title="Refresh missing albums">
+                    <IconButton size="small" onClick={() => void handleRefresh()} disabled={refreshing}>
+                        {refreshing ? <CircularProgress size={16} /> : <RefreshCw size={16} />}
+                    </IconButton>
+                </Tooltip>
             </Box>
         );
     }
@@ -598,6 +1095,7 @@ function MissingAlbumsViewer({ albums }: { albums: MissingAlbum[] }) {
                                 <TableCell>Album</TableCell>
                                 <TableCell sx={{ width: 60 }} align="right">Tracks</TableCell>
                                 <TableCell sx={{ width: 60 }}>Year</TableCell>
+                                <TableCell sx={{ width: 48 }} />
                                 <TableCell sx={{ width: 48 }} />
                             </TableRow>
                         </TableHead>
@@ -690,10 +1188,13 @@ function MissingAlbumsViewer({ albums }: { albums: MissingAlbum[] }) {
                                                     </Tooltip>
                                                 )}
                                             </TableCell>
+                                            <TableCell sx={{ p: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                                                <DownloadButton album={album} artist={artist} />
+                                            </TableCell>
                                         </TableRow>
                                         {isExpanded && album.mb_releasegroupid && (
                                             <TableRow key={`${rowId}-tracks`}>
-                                                <TableCell colSpan={5} sx={{ p: 0, borderBottom: 'none' }}>
+                                                <TableCell colSpan={6} sx={{ p: 0, borderBottom: 'none' }}>
                                                     <Collapse in={isExpanded} unmountOnExit>
                                                         <TrackList releaseId={album.mb_releasegroupid} />
                                                     </Collapse>

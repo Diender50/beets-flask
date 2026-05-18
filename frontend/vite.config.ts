@@ -48,11 +48,11 @@ export default defineConfig(({ mode }) => {
              */
             proxy: {
                 "^/api_v1/.*": {
-                    target: "http://localhost:5001",
+                    target: "http://127.0.0.1:5001",
                     changeOrigin: true,
                 },
-                "^/socket.io/.*": {
-                    target: "http://localhost:5001",
+                "/socket.io": {
+                    target: "http://127.0.0.1:5001",
                     changeOrigin: true,
                     ws: true,
                 },

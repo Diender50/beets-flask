@@ -361,12 +361,25 @@ export const itemsByArtistQueryOptions = <Minimal extends boolean>(
 });
 
 // Missing albums for a specific artist via beets missing plugin
-export const missingAlbumsByArtistQueryOptions = (name: string) => ({
+export const fetchMissingAlbumsByArtist = async (
+    name: string,
+    forceRefresh = false
+): Promise<MissingAlbum[]> => {
+    const refreshParam = forceRefresh ? '?refresh=1' : '';
+    const response = await fetch(
+        `/library/artists/${name}/missing${refreshParam}`
+    );
+    return (await response.json()) as MissingAlbum[];
+};
+
+// Missing albums for a specific artist via beets missing plugin
+export const missingAlbumsByArtistQueryOptions = (
+    name: string,
+    forceRefresh = false
+) => ({
     queryKey: ['artist', name, 'missing_albums'],
-    queryFn: async (): Promise<MissingAlbum[]> => {
-        const response = await fetch(`/library/artists/${name}/missing`);
-        return (await response.json()) as MissingAlbum[];
-    },
+    queryFn: async (): Promise<MissingAlbum[]> =>
+        fetchMissingAlbumsByArtist(name, forceRefresh),
 });
 
 // Tracklist for a missing album (by Deezer ID or MusicBrainz release group UUID)

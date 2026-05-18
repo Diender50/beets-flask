@@ -21,6 +21,7 @@ from beets_flask.library_cache import (
     invalidate_artists_cache,
     set_json_cache,
 )
+from beets_flask.logger import log
 from beets_flask.server.exceptions import NotFoundException
 
 artists_bp = Blueprint("artists", __name__)
@@ -48,7 +49,10 @@ def _split_pattern(separators: list[str]) -> str:
 split_pattern_artists = _split_pattern(ARTIST_SEPARATORS)
 
 ARTISTS_CACHE_TTL_SECONDS = 300
-MISSING_CACHE_TTL_SECONDS = 600
+MISSING_CACHE_TTL_SECONDS = 3600
+_MUSICBRAINZ_ID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
+)
 
 
 def _artists_cache_key(artist_name: str | None) -> str:
@@ -129,6 +133,14 @@ def _albumartist_names_from_album(album) -> list[str]:
     return [str(albumartist).strip()]
 
 
+def _extract_valid_mbids(raw: object) -> list[str]:
+    if raw is None:
+        return []
+
+    text = str(raw)
+    return [match.group(0).lower() for match in _MUSICBRAINZ_ID_RE.finditer(text)]
+
+
 def _find_artist_mbids(artist_name: str) -> set[str]:
     normalized_artist_name = _normalize_artist_name(artist_name)
     mbids: set[str] = set()
@@ -147,8 +159,10 @@ def _find_artist_mbids(artist_name: str) -> set[str]:
             continue
 
         for item_artist_name, mbid in zip(artist_names, artist_mbids, strict=False):
-            if _normalize_artist_name(item_artist_name) == normalized_artist_name and mbid:
-                mbids.add(str(mbid))
+            if _normalize_artist_name(item_artist_name) != normalized_artist_name:
+                continue
+            for parsed_mbid in _extract_valid_mbids(mbid):
+                mbids.add(parsed_mbid)
 
     return mbids
 
@@ -258,16 +272,16 @@ def _search_artist_mbid_from_mb(artist_name: str) -> set[str]:
         normalized = _normalize_artist_name(artist_name)
         for artist in result.get("artist-list", []):
             if _normalize_artist_name(artist.get("name", "")) == normalized:
-                mbid = artist.get("id")
-                if mbid:
-                    return {mbid}
+                mbids = _extract_valid_mbids(artist.get("id"))
+                if mbids:
+                    return set(mbids)
         # No exact match — take highest-scored result if score >= 90
         for artist in result.get("artist-list", []):
             score = int(artist.get("ext:score", 0) or 0)
             if score >= 90:
-                mbid = artist.get("id")
-                if mbid:
-                    return {mbid}
+                mbids = _extract_valid_mbids(artist.get("id"))
+                if mbids:
+                    return set(mbids)
     except Exception:
         pass
     return set()
@@ -423,14 +437,40 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
     if not artist_mbids:
         return []
 
-    owned_release_group_ids = _owned_release_group_ids(artist_name)
-    missing_by_release_group: dict[str, dict[str, str | int | None]] = {}
+    log.info(
+        "missing_albums musicbrainz mbids artist=%s count=%s mbids=%s",
+        artist_name,
+        len(artist_mbids),
+        sorted(artist_mbids),
+    )
 
-    for artist_mbid in artist_mbids:
-        response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+    owned_release_group_ids = _owned_release_group_ids(artist_name)
+    owned_titles = _owned_album_titles_normalized(artist_name)
+    missing_by_release_group: dict[str, dict[str, str | int | None]] = {}
+    had_successful_lookup = False
+
+    for artist_mbid in sorted(artist_mbids):
+        try:
+            response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+            had_successful_lookup = True
+        except Exception as exc:
+            log.warning(
+                "missing_albums skip musicbrainz artist id artist=%s mbid=%s error_type=%s error=%s",
+                artist_name,
+                artist_mbid,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+
         for release_group in response.get("release-group-list", []):
             release_group_id = release_group.get("id")
             if not release_group_id or release_group_id in owned_release_group_ids:
+                continue
+            # Also filter by title: catches imported albums whose mb_releasegroupid
+            # doesn't match (e.g. beets set a different release ID, or no ID at all)
+            title_key = _normalize_for_dedup(release_group.get("title", ""))
+            if title_key in owned_titles:
                 continue
 
             missing_by_release_group[release_group_id] = {
@@ -443,6 +483,40 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
                 "cover_url": None,
                 "track_count": None,
             }
+
+    if not had_successful_lookup:
+        fallback_mbids = _search_artist_mbid_from_mb(artist_name)
+        extra_mbids = sorted(fallback_mbids - artist_mbids)
+        if extra_mbids:
+            log.info(
+                "missing_albums musicbrainz fallback_mbids artist=%s mbids=%s",
+                artist_name,
+                extra_mbids,
+            )
+        for artist_mbid in extra_mbids:
+            try:
+                response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+            except Exception:
+                continue
+
+            for release_group in response.get("release-group-list", []):
+                release_group_id = release_group.get("id")
+                if not release_group_id or release_group_id in owned_release_group_ids:
+                    continue
+                title_key = _normalize_for_dedup(release_group.get("title", ""))
+                if title_key in owned_titles:
+                    continue
+
+                missing_by_release_group[release_group_id] = {
+                    "album": release_group.get("title", ""),
+                    "year": _extract_release_group_year(
+                        release_group.get("first-release-date")
+                    ),
+                    "mb_releasegroupid": release_group_id,
+                    "release_type": _release_type_from_mb(release_group),
+                    "cover_url": None,
+                    "track_count": None,
+                }
 
     return list(missing_by_release_group.values())
 
@@ -726,19 +800,40 @@ async def missing_albums_by_artist(artist_name: str):
     owned albums can still resolve their own missing release groups.
     """
     cache_key = _missing_cache_key(artist_name)
-    cached = get_json_cache(cache_key)
-    if cached is not None:
-        return Response(cached, mimetype="application/json")
+    refresh = request.args.get("refresh", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    log.info(
+        "missing_albums request artist=%s refresh=%s",
+        artist_name,
+        refresh,
+    )
+    if not refresh:
+        cached = get_json_cache(cache_key)
+        if cached is not None:
+            log.info("missing_albums cache_hit artist=%s", artist_name)
+            return Response(cached, mimetype="application/json")
+        log.info("missing_albums cache_miss artist=%s", artist_name)
+    else:
+        log.info("missing_albums force_refresh artist=%s", artist_name)
 
     try:
         missing = _missing_albums_from_sources(artist_name)
-    except musicbrainzngs.musicbrainz.MusicBrainzError:
-        payload = "[]"
-        set_json_cache(cache_key, payload, MISSING_CACHE_TTL_SECONDS)
-        return Response(payload, mimetype="application/json")
+    except musicbrainzngs.musicbrainz.MusicBrainzError as exc:
+        log.warning(
+            "missing_albums musicbrainz_error artist=%s error=%s",
+            artist_name,
+            exc,
+        )
+        # Do not cache the error result — return empty without writing to Redis
+        # so the next request retries MusicBrainz instead of serving stale "[]" for an hour.
+        return Response("[]", mimetype="application/json")
 
     payload = pd.DataFrame(missing).to_json(orient="records")
     set_json_cache(cache_key, payload, MISSING_CACHE_TTL_SECONDS)
+    log.info("missing_albums computed artist=%s count=%s", artist_name, len(missing))
     return Response(payload, mimetype="application/json")
 
 

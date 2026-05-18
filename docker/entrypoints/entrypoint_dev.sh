@@ -5,19 +5,6 @@ log_current_user
 log_version_info
 log "Starting development environment..."
 
-cd /repo/frontend
-
-# pnpm run build:dev &  # use this for debugging with ios, port 5001 (no cors allowed)
-pnpm run dev & # normal dev, port 5173
-vite_pid=$!
-sleep 3  # Give Vite a moment to start
-if ! kill -0 $vite_pid 2>/dev/null; then
-    echo "starting vite failed, will try to fix this by installing dependencies ..."
-    pnpm install
-    pnpm run dev &
-fi
-
-
 cd /repo
 
 mkdir -p /repo/log
@@ -65,7 +52,23 @@ uvicorn beets_flask.server.app:create_app --port 5001 \
     --factory \
     --workers 1 \
     --use-colors \
-    --reload
+    --reload &
+uvicorn_pid=$!
+
+cd /repo/frontend
+
+# pnpm run build:dev &  # use this for debugging with ios, port 5001 (no cors allowed)
+pnpm run dev & # normal dev, port 5173
+vite_pid=$!
+sleep 3
+if ! kill -0 $vite_pid 2>/dev/null; then
+    echo "starting vite failed, will try to fix this by installing dependencies ..."
+    pnpm install
+    pnpm run dev &
+fi
+
+# Keep container tied to backend lifecycle.
+wait $uvicorn_pid
 
 
 

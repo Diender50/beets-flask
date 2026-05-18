@@ -10,6 +10,11 @@ export function customizeFetch() {
     const originalFetch = window.fetch;
     const apiPrefix = '/api_v1';
 
+    const sleep = (ms: number) =>
+        new Promise((resolve) => {
+            window.setTimeout(resolve, ms);
+        });
+
     window.fetch = async (
         input: RequestInfo | URL,
         init?: RequestInit
@@ -25,8 +30,37 @@ export function customizeFetch() {
             return originalFetch(input, init);
         }
 
-        // console.log("fetching", apiPrefix + input);
-        const response = await originalFetch(apiPrefix + input, init);
+        // Retry only idempotent requests for transient startup connection races.
+        const method = (init?.method ?? 'GET').toUpperCase();
+        const canRetry = method === 'GET' || method === 'HEAD';
+
+        let response: Response | undefined;
+        try {
+            response = await originalFetch(apiPrefix + input, init);
+        } catch (error) {
+            if (!canRetry) {
+                throw error;
+            }
+
+            let lastError = error;
+            for (let attempt = 0; attempt < 4; attempt++) {
+                await sleep(250 * (attempt + 1));
+                try {
+                    response = await originalFetch(apiPrefix + input, init);
+                    break;
+                } catch (retryError) {
+                    lastError = retryError;
+                }
+            }
+
+            if (!response) {
+                throw lastError;
+            }
+        }
+
+        if (!response) {
+            throw new HTTPError('Request failed without response');
+        }
 
         if (!response.ok) {
             const data: SerializedException | string = await response

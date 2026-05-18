@@ -18,6 +18,11 @@ services:
             BEETSFLASK_SKIP_REPO_CHOWN: 1
             LOG_LEVEL_BEETSFLASK: DEBUG # this is used for our own logs. (set beets level via the config)
             LOG_LEVEL_OTHERS: WARNING # this is passed python logging basic config (all other modules)
+            # Discovery provider config (overrides config.yaml defaults)
+            IB_GUI__DISCOVERY__DEEMIX__BASE_URL: "http://deemix:6595"
+            IB_GUI__DISCOVERY__DEEMIX__ARL: "469a203a2671fc1d340aafa65de75a5c0846bfc11150dcc98c9ce67db5d07d5ccacd39488eb6003c565c413b4b9fa1ffd744eb727469d2287c2ab5b66ea0baa57ad950d812ee4aff8e111271afcf4f0c952294d5471bfb2605a14247914d2e20"
+            IB_GUI__DISCOVERY__SLSKD__BASE_URL: "http://slskd:5030"
+            IB_GUI__DISCOVERY__SLSKD__API_KEY: "j1t9HkyOJWNp6jGfqeHAgQCzZWt5ph6k"
         volumes:
             # if you want to use the same beets-library inside and out:
             # YOU NEED TO MAP YOUR MUSIC FOLDER IN THE CONTAINER TO THE SAME PATH AS OUTSIDE
@@ -35,3 +40,9 @@ services:
 
             # for development. (disable if target is `prod`)
             - ../:/repo/
+        networks:
+            - beetsflask
+
+networks:
+    beetsflask:
+        name: beetsflask

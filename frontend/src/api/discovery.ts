@@ -59,12 +59,13 @@ export async function searchArtists(q: string): Promise<ArtistSearchResult[]> {
     return response.json();
 }
 
-/* ──────────────────── Download stubs (Phase 3) ─────────────────── */
+/* ──────────────────── Download (Phase 3) ───────────────────────── */
 
 export type DownloadStatus = 'pending' | 'downloading' | 'done' | 'error';
 
 export interface DownloadJob {
     job_id: string;
+    provider?: 'auto' | 'deemix' | 'slskd';
     deezer_id: string;
     album: string;
     artist: string;
@@ -73,4 +74,119 @@ export interface DownloadJob {
     created_at: string;
     completed_at?: string | null;
     output_path?: string | null;
+    query?: string | null;
+    release_id?: string | null;
+    selected_match?: Record<string, unknown> | null;
+    provider_candidates?: Array<Record<string, unknown>> | null;
+    selection_reason?: string | null;
+    stage?: string | null;
+    progress_message?: string | null;
+}
+
+export interface DownloadSuggestion {
+    provider: 'deemix' | 'slskd';
+    score: number;
+    title: string;
+    artist: string;
+    details: Record<string, unknown>;
+}
+
+export interface DownloadSuggestionsResponse {
+    artist: string;
+    album: string;
+    results: DownloadSuggestion[];
+}
+
+export async function getDownloadSuggestions(opts: {
+    album: string;
+    artist: string;
+    provider?: 'deemix' | 'slskd';
+    signal?: AbortSignal;
+}): Promise<DownloadSuggestionsResponse> {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, 120_000);
+    const relayAbort = () => controller.abort();
+    opts.signal?.addEventListener('abort', relayAbort, { once: true });
+    let response: Response;
+    try {
+        response = await fetch('/discovery/download/options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                album: opts.album,
+                artist: opts.artist,
+                provider: opts.provider,
+            }),
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (timedOut && error instanceof DOMException && error.name === 'AbortError') {
+            throw new Error('Load download suggestions timed out after 120s');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+        opts.signal?.removeEventListener('abort', relayAbort);
+    }
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Load download suggestions failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+
+export async function startDownload(opts: {
+    album: string;
+    artist: string;
+    provider?: 'deemix' | 'slskd';
+    deezer_id?: string;
+    candidate?: Record<string, unknown>;
+    release_id?: string;
+}): Promise<DownloadJob> {
+    const response = await fetch('/discovery/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Download failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+
+export async function getDownloadJob(jobId: string): Promise<DownloadJob> {
+    const response = await fetch(`/discovery/download/${encodeURIComponent(jobId)}`);
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Load download job failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+
+export async function cleanupSlskdSearches(opts: {
+    album: string;
+    artist: string;
+    searchIds?: string[];
+}): Promise<number> {
+    const response = await fetch('/discovery/download/slskd/searches', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            album: opts.album,
+            artist: opts.artist,
+            search_ids: opts.searchIds ?? [],
+        }),
+    });
+    if (!response.ok) {
+        return 0;
+    }
+    const payload = (await response.json()) as { deleted?: unknown };
+    const deleted = Number(payload.deleted);
+    return Number.isFinite(deleted) && deleted > 0 ? deleted : 0;
 }
