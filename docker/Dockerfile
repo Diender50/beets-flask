@@ -1,6 +1,7 @@
 FROM python:3.11-alpine3.20 AS base
 
 ARG NODE_VERSION=22.12.0
+ARG TARGETARCH
 
 FROM base AS deps
 
@@ -44,7 +45,13 @@ RUN --mount=type=cache,target=/var/cache/apk \
 
 # Vite 7 requires Node >=20.19 or >=22.12. Alpine 3.20 packages currently ship
 # unsupported Node versions for this project, so we install a pinned musl build.
-RUN curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64-musl.tar.xz" \
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) NODE_ARCH="x64" ;; \
+        arm64) NODE_ARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}-musl.tar.xz" \
     | tar -xJ -C /usr/local --strip-components=1
 
 RUN node --version && npm --version
