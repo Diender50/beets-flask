@@ -1,7 +1,7 @@
-FROM python:3.11-alpine3.20 AS base
-
 ARG NODE_VERSION=22.12.0
-ARG TARGETARCH
+FROM node:${NODE_VERSION}-alpine3.20 AS node_runtime
+
+FROM python:3.11-alpine3.20 AS base
 
 FROM base AS deps
 
@@ -43,16 +43,13 @@ RUN --mount=type=cache,target=/var/cache/apk \
     curl \
     xz
 
-# Vite 7 requires Node >=20.19 or >=22.12. Alpine 3.20 packages currently ship
-# unsupported Node versions for this project, so we install a pinned musl build.
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-        amd64) NODE_ARCH="x64" ;; \
-        arm64) NODE_ARCH="arm64" ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}-musl.tar.xz" \
-    | tar -xJ -C /usr/local --strip-components=1
+# Vite 7 requires Node >=20.19 or >=22.12. We copy pinned binaries from
+# official multi-arch Node image to avoid flaky external tar downloads.
+COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=node_runtime /usr/local/bin/corepack /usr/local/bin/corepack
+COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN node --version && npm --version
 
