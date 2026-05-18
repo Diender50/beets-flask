@@ -43,13 +43,17 @@ RUN --mount=type=cache,target=/var/cache/apk \
     curl \
     xz
 
-# Vite 7 requires Node >=20.19 or >=22.12. We copy pinned binaries from
-# official multi-arch Node image to avoid flaky external tar downloads.
+# Vite 7 requires Node >=20.19 or >=22.12. We copy the node binary and npm
+# package from the official multi-arch Node Alpine image, then create our own
+# shell wrapper scripts for npm/npx so we are not relying on the original
+# symlinks/shebangs from the source image (which break in a different rootfs).
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
-COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
-COPY --from=node_runtime /usr/local/bin/corepack /usr/local/bin/corepack
-COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node_runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN printf '#!/bin/sh\nexec node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"\n' \
+        > /usr/local/bin/npm \
+    && printf '#!/bin/sh\nexec node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"\n' \
+        > /usr/local/bin/npx \
+    && chmod +x /usr/local/bin/npm /usr/local/bin/npx
 
 RUN node --version && npm --version
 
