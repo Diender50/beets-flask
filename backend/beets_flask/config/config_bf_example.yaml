@@ -57,6 +57,12 @@ gui:
             api_key: ""
             timeout_seconds: 20
 
+        squidwtf:
+            # Public API endpoint (no credentials required)
+            base_url: "https://qobuz.squid.wtf"
+            quality: "27"
+            timeout_seconds: 45
+
         ranking:
             mode: "balanced" # balanced | quality | speed
             min_bitrate_kbps: 192

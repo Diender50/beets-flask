@@ -36,6 +36,13 @@ gui:
             api_key: ""
             timeout_seconds: 40
 
+        squidwtf:
+            # Public SquidWTF qobuz API endpoint.
+            base_url: "https://qobuz.squid.wtf"
+            # Qobuz quality code: 27 (FLAC 24-bit), 7 (FLAC 24/96), 6 (FLAC 16-bit), 5 (MP3 320)
+            quality: "27"
+            timeout_seconds: 45
+
         ranking:
             # balanced | quality | speed
             mode: "balanced"

@@ -65,8 +65,9 @@ export type DownloadStatus = 'pending' | 'downloading' | 'done' | 'error';
 
 export interface DownloadJob {
     job_id: string;
-    provider?: 'auto' | 'deemix' | 'slskd';
+    provider?: 'auto' | 'deemix' | 'slskd' | 'squidwtf';
     deezer_id: string;
+    squid_album_id?: string | null;
     album: string;
     artist: string;
     status: DownloadStatus;
@@ -84,7 +85,7 @@ export interface DownloadJob {
 }
 
 export interface DownloadSuggestion {
-    provider: 'deemix' | 'slskd';
+    provider: 'deemix' | 'slskd' | 'squidwtf';
     score: number;
     title: string;
     artist: string;
@@ -100,7 +101,7 @@ export interface DownloadSuggestionsResponse {
 export async function getDownloadSuggestions(opts: {
     album: string;
     artist: string;
-    provider?: 'deemix' | 'slskd';
+    provider?: 'deemix' | 'slskd' | 'squidwtf';
     signal?: AbortSignal;
 }): Promise<DownloadSuggestionsResponse> {
     const controller = new AbortController();
@@ -143,8 +144,9 @@ export async function getDownloadSuggestions(opts: {
 export async function startDownload(opts: {
     album: string;
     artist: string;
-    provider?: 'deemix' | 'slskd';
+    provider?: 'deemix' | 'slskd' | 'squidwtf';
     deezer_id?: string;
+    squid_album_id?: string;
     candidate?: Record<string, unknown>;
     release_id?: string;
 }): Promise<DownloadJob> {

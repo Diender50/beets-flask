@@ -37,6 +37,7 @@ dependencies = [
     "tinytag",
     "pydub",
     "aiohttp",
+    "cloudscraper>=1.2.71",
     "aiofiles",
     "numpy",
     "pandas",

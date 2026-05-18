@@ -18,9 +18,11 @@ from beets_flask.discovery.download import (
     run_auto_download,
     run_deemix_download,
     run_slskd_download,
+    run_squidwtf_download,
 )
 from beets_flask.discovery.providers import deemix as deemix_provider
 from beets_flask.discovery.providers import slskd as slskd_provider
+from beets_flask.discovery.providers import squidwtf as squidwtf_provider
 from beets_flask.discovery.followed_artists import (
     follow_artist,
     get_followed_artists,
@@ -127,6 +129,15 @@ def _slskd_settings() -> dict:
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 40),
         "ranking_mode": _cfg_str(rank + ["mode"], "balanced").casefold() or "balanced",
         "min_bitrate_kbps": _cfg_int(rank + ["min_bitrate_kbps"], 192),
+    }
+
+
+def _squidwtf_settings() -> dict:
+    base = ["gui", "discovery", "squidwtf"]
+    return {
+        "base_url": _cfg_str(base + ["base_url"], "https://qobuz.squid.wtf"),
+        "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 45),
+        "quality": _cfg_str(base + ["quality"], "27") or "27",
     }
 
 
@@ -286,7 +297,48 @@ async def start_download():
         )
         return jsonify(job), 202
 
-    return jsonify({"error": "provider must be 'deemix' or 'slskd'"}), 400
+    if provider == "squidwtf":
+        if not album.strip() and not artist.strip():
+            return jsonify({"error": "artist or album required"}), 400
+
+        wcfg = _squidwtf_settings()
+        squid_album_id = str(data.get("squid_album_id", "")).strip() or None
+        if not squid_album_id:
+            match = await squidwtf_provider.resolve_squidwtf_match_for_album(
+                artist=artist,
+                album=album,
+                timeout_seconds=min(20, wcfg["timeout_seconds"]),
+                base_url=wcfg["base_url"],
+            )
+            if not match:
+                return jsonify({"error": "Could not resolve SquidWTF release"}), 404
+            squid_album_id = str(match.get("squid_album_id") or "").strip() or None
+            if not squid_album_id:
+                return jsonify({"error": "SquidWTF album id missing in match"}), 502
+
+        job = create_download_job(
+            provider="squidwtf",
+            squid_album_id=squid_album_id,
+            album=album,
+            artist=artist,
+            release_id=release_id,
+        )
+
+        asyncio.ensure_future(
+            run_squidwtf_download(
+                job_id=job["job_id"],
+                artist=artist,
+                album=album,
+                squid_album_id=squid_album_id,
+                output_path=output_path,
+                base_url=wcfg["base_url"],
+                timeout_seconds=wcfg["timeout_seconds"],
+                quality=wcfg["quality"],
+            )
+        )
+        return jsonify(job), 202
+
+    return jsonify({"error": "provider must be 'deemix', 'slskd' or 'squidwtf'"}), 400
 
 
 @discovery_bp.route("/download/options", methods=["POST"])
@@ -300,12 +352,12 @@ async def download_options():
     provider_filter = str(data.get("provider", "")).strip().casefold()
     if not artist and not album:
         return jsonify({"error": "artist or album required"}), 400
-    if provider_filter and provider_filter not in ("deemix", "slskd"):
-        return jsonify({"error": "provider must be 'deemix' or 'slskd' when set"}), 400
+    if provider_filter and provider_filter not in ("deemix", "slskd", "squidwtf"):
+        return jsonify({"error": "provider must be 'deemix', 'slskd' or 'squidwtf' when set"}), 400
 
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
-
+    wcfg = _squidwtf_settings()
     async def probe_deemix():
         if not dcfg["base_url"]:
             log.warning("deemix base_url not configured, skipping")
@@ -435,8 +487,44 @@ async def download_options():
             )
         return options
 
+    async def probe_squidwtf():
+        base_url = wcfg["base_url"]
+        if not base_url:
+            log.warning("squidwtf base_url not configured, skipping")
+            return []
+        log.info("Probing squidwtf for artist=%s album=%s", artist, album)
+
+        match = await squidwtf_provider.resolve_squidwtf_match_for_album(
+            artist=artist,
+            album=album,
+            timeout_seconds=min(20, wcfg["timeout_seconds"]),
+            base_url=base_url,
+        )
+        if not match:
+            return []
+
+        quality_info = squidwtf_provider.quality_label_to_display(wcfg["quality"])
+        return [
+            _download_suggestion_summary(
+                provider="squidwtf",
+                score=float(match.get("score") or 0.0),
+                title=str(match.get("title") or album),
+                artist=str(match.get("artist") or artist),
+                details={
+                    "squid_album_id": match.get("squid_album_id"),
+                    "trackCount": match.get("track_count"),
+                    "quality": wcfg["quality"],
+                    "container": quality_info.get("container"),
+                    "kbps": quality_info.get("kbps"),
+                    "source": "qobuz",
+                    "url": f"{base_url.rstrip('/')}/api/get-album?album_id={match.get('squid_album_id')}",
+                },
+            )
+        ]
+
     deemix_options: list[dict] = []
     slskd_options: list[dict] = []
+    squidwtf_options: list[dict] = []
 
     if provider_filter == "deemix":
         try:
@@ -448,11 +536,17 @@ async def download_options():
             slskd_options = await probe_slskd()
         except Exception as exc:
             log.warning("probe_slskd failed: %r", exc)
+    elif provider_filter == "squidwtf":
+        try:
+            squidwtf_options = await probe_squidwtf()
+        except Exception as exc:
+            log.warning("probe_squidwtf failed: %r", exc)
     else:
         # Run both probes in parallel, but return as soon as slskd is done.
-        # deemix is best-effort and must not block slskd results.
+        # deemix and squidwtf are best-effort and must not block slskd results.
         deemix_task = asyncio.create_task(probe_deemix())
         slskd_task = asyncio.create_task(probe_slskd())
+        squidwtf_task = asyncio.create_task(probe_squidwtf())
 
         try:
             slskd_result = await slskd_task
@@ -460,8 +554,7 @@ async def download_options():
         except Exception as exc:
             log.warning("probe_slskd failed: %r", exc)
 
-        # If deemix is ready too, include it; otherwise return immediately with slskd.
-        # We give deemix a tiny grace window to avoid returning empty on near-complete responses.
+        # If deemix/squidwtf are ready too, include them; otherwise return immediately with slskd.
         try:
             deemix_result = await asyncio.wait_for(deemix_task, timeout=0.75)
             deemix_options = deemix_result if isinstance(deemix_result, list) else []
@@ -470,11 +563,20 @@ async def download_options():
             log.info("deemix probe still running when slskd finished; returning partial results")
         except Exception as exc:
             log.warning("probe_deemix failed: %r", exc)
-    results = [*deemix_options, *slskd_options]
+
+        try:
+            squid_result = await asyncio.wait_for(squidwtf_task, timeout=0.75)
+            squidwtf_options = squid_result if isinstance(squid_result, list) else []
+        except asyncio.TimeoutError:
+            squidwtf_task.cancel()
+            log.info("squidwtf probe still running when slskd finished; returning partial results")
+        except Exception as exc:
+            log.warning("probe_squidwtf failed: %r", exc)
+    results = [*deemix_options, *slskd_options, *squidwtf_options]
     results.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
     log.info(
-        "Download options artist=%s album=%s deemix=%d slskd=%d",
-        artist, album, len(deemix_options), len(slskd_options),
+        "Download options artist=%s album=%s deemix=%d slskd=%d squidwtf=%d",
+        artist, album, len(deemix_options), len(slskd_options), len(squidwtf_options),
     )
     return jsonify({
         "artist": artist,

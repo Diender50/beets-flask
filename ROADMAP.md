@@ -70,11 +70,6 @@
 - **Download:** Queue albums for download
 - **Quality:** Allow user-selectable bitrate/quality
 
-### 3.3 Future Providers
-- Bandcamp API
-- SoundCloud
-- Other P2P / streaming platforms
-
 ---
 
 ## Phase 4: Workflow Polish & Automation

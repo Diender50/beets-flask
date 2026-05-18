@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from beets_flask.discovery.providers import deemix, slskd
+from beets_flask.discovery.providers import deemix, slskd, squidwtf
 
 from beets_flask.logger import log
 from beets_flask.redis import redis_conn
@@ -33,6 +33,7 @@ def create_download_job(
     album: str,
     artist: str,
     deezer_id: str | None = None,
+    squid_album_id: str | None = None,
     release_id: str | None = None,
     query: str | None = None,
 ) -> dict:
@@ -42,6 +43,7 @@ def create_download_job(
         "job_id": job_id,
         "provider": provider,
         "deezer_id": deezer_id,
+        "squid_album_id": squid_album_id,
         "release_id": release_id,
         "query": query,
         "album": album,
@@ -125,6 +127,19 @@ def _slskd_candidate_summary(candidate: dict | None, score: float | None = None)
         "speed": candidate.get("uploadSpeed") or candidate.get("speed") or candidate.get("averageSpeed"),
         "size": candidate.get("size"),
         "score": score,
+    }
+
+
+def _squidwtf_candidate_summary(match: dict | None) -> dict | None:
+    if not match:
+        return None
+    return {
+        "provider": "squidwtf",
+        "squid_album_id": match.get("squid_album_id"),
+        "title": match.get("title"),
+        "artist": match.get("artist"),
+        "track_count": match.get("track_count"),
+        "score": match.get("score"),
     }
 
 
@@ -436,3 +451,67 @@ async def run_slskd_download(
             completed_at=_now_iso(),
         )
         log.exception("Unexpected error during slskd provider download")
+
+
+async def run_squidwtf_download(
+    *,
+    job_id: str,
+    artist: str,
+    album: str,
+    squid_album_id: str,
+    output_path: str,
+    base_url: str,
+    timeout_seconds: int,
+    quality: str,
+) -> None:
+    _update_job(
+        job_id,
+        status=DownloadStatus.DOWNLOADING,
+        output_path=output_path,
+        stage="downloading",
+        progress_message="Downloading tracks from squidwtf",
+    )
+    log.info(
+        "Squidwtf download start %s",
+        _job_summary(job_id, artist=artist, album=album, squid_album_id=squid_album_id),
+    )
+
+    try:
+        ok, info = await squidwtf.download_album(
+            base_url=base_url,
+            album_id=squid_album_id,
+            output_path=output_path,
+            quality=quality,
+            timeout_seconds=timeout_seconds,
+        )
+        if ok:
+            _update_job(
+                job_id,
+                status=DownloadStatus.DONE,
+                completed_at=_now_iso(),
+                stage="done",
+                progress_message="Squidwtf download finished",
+                error=None,
+            )
+            return
+
+        _update_job(
+            job_id,
+            status=DownloadStatus.ERROR,
+            error=info or "squidwtf download failed",
+            completed_at=_now_iso(),
+            stage="failed",
+            progress_message="Squidwtf download failed",
+        )
+    except Exception as exc:
+        _update_job(
+            job_id,
+            status=DownloadStatus.ERROR,
+            error=str(exc),
+            completed_at=_now_iso(),
+            stage="failed",
+            progress_message="Squidwtf download crashed",
+        )
+        log.exception("Unexpected error during squidwtf provider download")
+
+

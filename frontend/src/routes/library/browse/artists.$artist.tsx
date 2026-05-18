@@ -635,6 +635,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     const [suggestionChoices, setSuggestionChoices] = useState<DownloadSuggestion[]>([]);
     const [slskdLoading, setSlskdLoading] = useState(false);
     const [deemixLoading, setDeemixLoading] = useState(false);
+    const [squidwtfLoading, setSquidwtfLoading] = useState(false);
     const [suggestionErrors, setSuggestionErrors] = useState<string[]>([]);
     const searchAbortRef = useRef<AbortController[] | null>(null);
 
@@ -671,17 +672,19 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
 
         const slskdCtrl = new AbortController();
         const deemixCtrl = new AbortController();
+        const squidwtfCtrl = new AbortController();
         // cancelled guards against React Strict Mode's double-invocation:
         // the first effect run's async callbacks must not update state after
         // the cleanup fires and the second run starts fresh.
         let cancelled = false;
 
-        searchAbortRef.current = [slskdCtrl, deemixCtrl];
+        searchAbortRef.current = [slskdCtrl, deemixCtrl, squidwtfCtrl];
 
         setSuggestionChoices([]);
         setSuggestionErrors([]);
         setSlskdLoading(true);
         setDeemixLoading(true);
+        setSquidwtfLoading(true);
 
         const mergeChoices = (incoming: DownloadSuggestion[]) => {
             if (cancelled) return;
@@ -700,7 +703,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         };
 
         const runProvider = async (
-            provider: 'slskd' | 'deemix',
+            provider: 'slskd' | 'deemix' | 'squidwtf',
             signal: AbortSignal,
             setLoading: (v: boolean) => void,
         ) => {
@@ -730,15 +733,17 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
 
         void runProvider('slskd', slskdCtrl.signal, setSlskdLoading);
         void runProvider('deemix', deemixCtrl.signal, setDeemixLoading);
+        void runProvider('squidwtf', squidwtfCtrl.signal, setSquidwtfLoading);
 
         return () => {
             cancelled = true;
             slskdCtrl.abort();
             deemixCtrl.abort();
+            squidwtfCtrl.abort();
         };
     }, [open, searchCycle, artist, album.album]);
 
-    const suggestionLoading = slskdLoading || deemixLoading;
+    const suggestionLoading = slskdLoading || deemixLoading || squidwtfLoading;
     const suggestionError = suggestionErrors.join(' | ');
 
     const mutation = useMutation({
@@ -750,6 +755,15 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     artist,
                     provider: 'deemix',
                     deezer_id: String(choice.details.deezer_id ?? deezerId ?? ''),
+                    release_id: releaseId,
+                });
+            }
+            if (choice.provider === 'squidwtf') {
+                return startDownload({
+                    album: album.album,
+                    artist,
+                    provider: 'squidwtf',
+                    squid_album_id: String(choice.details.squid_album_id ?? ''),
                     release_id: releaseId,
                 });
             }
@@ -803,6 +817,8 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         const providerName = String(selectedMatch.provider ?? provider);
         const label = providerName === 'deemix'
             ? `deemix ${String(selectedMatch.deezer_id ?? '')}`.trim()
+            : providerName === 'squidwtf'
+                ? `squidwtf ${String(selectedMatch.squid_album_id ?? '')}`.trim()
             : `slskd ${String(selectedMatch.filename ?? '')}`.trim();
         if (label.trim()) detailLines.push(`selected: ${label}`);
         const score = selectedMatch.score;
@@ -882,13 +898,13 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                         </Box>
                     ) : suggestionChoices.length > 0 ? (
                         <>
-                            {(deemixLoading || slskdLoading) && (
+                            {(deemixLoading || slskdLoading || squidwtfLoading) && (
                                 <Alert severity="info" variant="outlined" sx={{ mb: 1 }}>
-                                    Searching {slskdLoading && deemixLoading
-                                        ? 'slskd and deemix'
-                                        : slskdLoading
-                                          ? 'slskd'
-                                          : 'deemix'}...
+                                    Searching {[
+                                        slskdLoading ? 'slskd' : null,
+                                        deemixLoading ? 'deemix' : null,
+                                        squidwtfLoading ? 'squidwtf' : null,
+                                    ].filter(Boolean).join(', ')}...
                                 </Alert>
                             )}
                         <MuiList disablePadding>
@@ -896,7 +912,9 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                 (() => {
                                     const resultTrackCount = choice.provider === 'deemix'
                                         ? asNumber(choice.details.trackCount)
-                                        : asNumber(choice.details.audioFileCount);
+                                        : choice.provider === 'squidwtf'
+                                            ? asNumber(choice.details.trackCount)
+                                            : asNumber(choice.details.audioFileCount);
                                     const meanAudioBitrateKbps = choice.provider === 'slskd'
                                         ? asNumber(choice.details.meanAudioBitrateKbps)
                                         : null;
@@ -909,9 +927,13 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                     const hasFreeUploadSlot = Boolean(choice.details.hasFreeUploadSlot);
                                     const container = choice.provider === 'deemix'
                                         ? String(choice.details.container ?? '-')
+                                        : choice.provider === 'squidwtf'
+                                            ? String(choice.details.container ?? '-')
                                         : String(choice.details.extension ?? '-').toUpperCase();
                                     const kbps = choice.provider === 'deemix'
                                         ? asNumber(choice.details.kbps)
+                                        : choice.provider === 'squidwtf'
+                                            ? asNumber(choice.details.kbps)
                                         : meanAudioBitrateKbps;
                                     const trackColor = trackMatchColor(resultTrackCount, expectedTrackCount);
                                     const speedColor = speedMatchColor(uploadSpeed, queueLength, hasFreeUploadSlot);
@@ -935,7 +957,11 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                                 <Typography variant="body2" fontWeight={700}>
                                                     {choice.title}
                                                 </Typography>
-                                                <Chip size="small" label={choice.provider} color={choice.provider === 'deemix' ? 'primary' : 'secondary'} />
+                                                <Chip
+                                                    size="small"
+                                                    label={choice.provider}
+                                                    color={choice.provider === 'deemix' ? 'primary' : choice.provider === 'squidwtf' ? 'success' : 'secondary'}
+                                                />
                                                 <Chip size="small" label={`score ${choice.score.toFixed(3)}`} variant="outlined" />
                                             </Box>
                                         }
@@ -948,6 +974,17 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                                     <>
                                                         <Typography variant="caption" color="text.secondary">
                                                             Deezer ID: {String(choice.details.deezer_id ?? '-')}
+                                                        </Typography>
+                                                        <Typography variant="caption" sx={{ color: trackColor }}>
+                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
+                                                            {container !== '-' ? ` • ${container}` : ''}
+                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
+                                                        </Typography>
+                                                    </>
+                                                ) : choice.provider === 'squidwtf' ? (
+                                                    <>
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            Squid album ID: {String(choice.details.squid_album_id ?? '-')}
                                                         </Typography>
                                                         <Typography variant="caption" sx={{ color: trackColor }}>
                                                             Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
@@ -992,7 +1029,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                         </Alert>
                     ) : (
                         <Alert severity="warning" variant="outlined">
-                            No result found in deemix or slskd.
+                            No result found in deemix, squidwtf, or slskd.
                         </Alert>
                     )}
                 </DialogContent>
