@@ -27,6 +27,10 @@ gui:
             base_url: "http://deemix:6595"
             # Optional auth header if your deemix bridge requires it. Example: "Bearer <token>"
             auth_header: ""
+            # Optional Deezer ARL for authentication. Obtain from deemix bridge API.
+            arl: "469a203a2671fc1d340aafa65de75a5c0846bfc11150dcc98c9ce67db5d07d5ccacd39488eb6003c565c413b4b9fa1ffd744eb727469d2287c2ab5b66ea0baa57ad950d812ee4aff8e111271afcf4f0c952294d5471bfb2605a14247914d2e20"
+            # Inbox key/name/path where downloads should be written (e.g. Inbox3)
+            inbox_folder: ""
             timeout_seconds: 20
 
         slskd:
@@ -34,6 +38,8 @@ gui:
             base_url: "http://slskd:5030"
             # Optional slskd API key
             api_key: ""
+            # Inbox key/name/path where downloads should be written (e.g. Inbox3)
+            inbox_folder: ""
             timeout_seconds: 40
 
         squidwtf:
@@ -41,6 +47,8 @@ gui:
             base_url: "https://qobuz.squid.wtf"
             # Qobuz quality code: 27 (FLAC 24-bit), 7 (FLAC 24/96), 6 (FLAC 16-bit), 5 (MP3 320)
             quality: "27"
+            # Inbox key/name/path where downloads should be written (e.g. Inbox3)
+            inbox_folder: ""
             timeout_seconds: 45
 
         ranking:

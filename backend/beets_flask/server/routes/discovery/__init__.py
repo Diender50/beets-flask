@@ -52,21 +52,55 @@ async def handle_root_options():
     return "", 200
 
 
-def _get_download_path() -> str:
+def _all_inbox_paths() -> dict[str, str]:
     try:
         config = get_config()
         folders = config["gui"]["inbox"]["folders"].get({})
-        if folders:
-            for folder_cfg in folders.values():
-                path = folder_cfg.get("path", {})
-                if isinstance(path, str) and path:
-                    return path
-                if hasattr(path, "get"):
-                    val = path.get("")
-                    if val:
-                        return str(val)
     except Exception as exc:
-        log.warning("Could not read inbox path from config: %s", exc)
+        log.warning("Could not read inbox folders from config: %s", exc)
+        return {}
+
+    result: dict[str, str] = {}
+    if not isinstance(folders, dict):
+        return result
+
+    for folder_key, folder_cfg in folders.items():
+        if not isinstance(folder_cfg, dict):
+            continue
+        path = str(folder_cfg.get("path") or "").strip()
+        if not path:
+            continue
+
+        result[str(folder_key)] = path
+
+        name = str(folder_cfg.get("name") or "").strip()
+        if name:
+            result[name] = path
+
+        # Allow selecting direct path as selector value.
+        result[path] = path
+    return result
+
+
+def _provider_download_path(provider: str) -> str:
+    # `inbox_folder` can be inbox key (Inbox1), inbox name, or direct path.
+    selector = _cfg_str(["gui", "discovery", provider, "inbox_folder"], "").strip()
+    inbox_paths = _all_inbox_paths()
+
+    if selector and selector in inbox_paths:
+        return inbox_paths[selector]
+
+    if selector:
+        log.warning(
+            "Configured discovery.%s.inbox_folder=%s not found; using fallback inbox path",
+            provider,
+            selector,
+        )
+
+    # Fallback: first configured inbox path.
+    if inbox_paths:
+        return next(iter(inbox_paths.values()))
+
     return "/music/inbox_preview"
 
 
@@ -225,7 +259,7 @@ async def start_download():
     album = str(data.get("album", ""))
     artist = str(data.get("artist", ""))
     release_id = str(data.get("release_id", "")).strip() or None
-    output_path = _get_download_path()
+    output_path = _provider_download_path(provider)
 
     log.info(
         "Download request provider=%s artist=%s album=%s release_id=%s output=%s",
