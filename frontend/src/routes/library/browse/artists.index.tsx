@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Box,
     BoxProps,
@@ -8,6 +8,7 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
+    FormControlLabel,
     IconButton,
     InputAdornment,
     List,
@@ -15,6 +16,7 @@ import {
     ListItemAvatar,
     ListItemText,
     Avatar,
+    Switch,
     TextField,
     Tooltip,
     Typography,
@@ -49,14 +51,26 @@ function RouteComponent() {
     const { data: followedArtists = [] } = useQuery(followedArtistsQueryOptions());
 
     const [followDialogOpen, setFollowDialogOpen] = useState(false);
+    const [albumArtistOnly, setAlbumArtistOnly] = useState(true);
 
     // Merge: library artists + followed artists not already in library
     const libraryNames = useMemo(
         () => new Set(libraryArtists.map((a) => a.artist.toLowerCase())),
         [libraryArtists]
     );
+    const followedNames = useMemo(
+        () => new Set(followedArtists.map((a) => a.name.toLowerCase())),
+        [followedArtists]
+    );
 
     const mergedArtists: Artist[] = useMemo(() => {
+        const libraryWithFollowState: Artist[] = libraryArtists.map((artist) => ({
+            ...artist,
+            followed:
+                Boolean(artist.followed) ||
+                followedNames.has(artist.artist.toLowerCase()),
+        }));
+
         const followedOnly: Artist[] = followedArtists
             .filter((f) => !libraryNames.has(f.name.toLowerCase()))
             .map((f) => ({
@@ -66,13 +80,19 @@ function RouteComponent() {
                 total_size: 0,
                 followed: true,
             }));
-        return [...libraryArtists, ...followedOnly];
-    }, [libraryArtists, followedArtists, libraryNames]);
+        return [...libraryWithFollowState, ...followedOnly];
+    }, [libraryArtists, followedArtists, libraryNames, followedNames]);
+
+    const displayedArtists = useMemo(() => {
+        if (!albumArtistOnly) return mergedArtists;
+        // Keep albumartists (album_count > 0) and followed-only artists
+        return mergedArtists.filter((a) => (a.album_count ?? 0) > 0 || a.followed);
+    }, [mergedArtists, albumArtistOnly]);
 
     return (
         <>
             <ArtistsHeader
-                nArtists={mergedArtists.length}
+                nArtists={displayedArtists.length}
                 onAddArtist={() => setFollowDialogOpen(true)}
                 sx={(theme) => ({
                     [theme.breakpoints.down('laptop')]: {
@@ -82,7 +102,9 @@ function RouteComponent() {
             />
             <Divider sx={{ backgroundColor: 'primary.muted' }} />
             <ArtistsListWrapper
-                artists={mergedArtists}
+                artists={displayedArtists}
+                albumArtistOnly={albumArtistOnly}
+                onAlbumArtistOnlyChange={setAlbumArtistOnly}
                 sx={(theme) => ({
                     display: 'flex',
                     flexDirection: 'column',
@@ -150,9 +172,30 @@ function ArtistsHeader({
 
 function ArtistsListWrapper({
     artists,
+    albumArtistOnly,
+    onAlbumArtistOnlyChange,
     ...props
-}: { artists: Array<Artist> } & BoxProps) {
+}: { artists: Array<Artist>; albumArtistOnly: boolean; onAlbumArtistOnlyChange: (v: boolean) => void } & BoxProps) {
     const [filter, setFilter] = useState<string>('');
+    const [selectedToFollow, setSelectedToFollow] = useState<Set<string>>(new Set());
+    const queryClient = useQueryClient();
+
+    const followMutation = useMutation({
+        mutationFn: (name: string) => followArtist(name),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+    });
+
+    const bulkFollowMutation = useMutation({
+        mutationFn: async (names: string[]) => {
+            await Promise.all(names.map((name) => followArtist(name)));
+        },
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            setSelectedToFollow(new Set());
+        },
+    });
 
     const filteredData = useMemo(() => {
         if (!filter) {
@@ -165,14 +208,68 @@ function ArtistsListWrapper({
 
     const nRemovedByFilter = artists.length - filteredData.length;
 
+    useEffect(() => {
+        const visibleUnfollowed = new Set(
+            filteredData
+                .filter((artist) => !artist.followed)
+                .map((artist) => artist.artist)
+        );
+        setSelectedToFollow((prev) => {
+            const next = new Set(
+                [...prev].filter((name) => visibleUnfollowed.has(name))
+            );
+            return next;
+        });
+    }, [filteredData]);
+
+    const handleToggleSelection = (artistName: string, checked: boolean) => {
+        setSelectedToFollow((prev) => {
+            const next = new Set(prev);
+            if (checked) next.add(artistName);
+            else next.delete(artistName);
+            return next;
+        });
+    };
+
+    const handleToggleSelectAll = (checked: boolean, artistNames: string[]) => {
+        setSelectedToFollow((prev) => {
+            const next = new Set(prev);
+            if (checked) {
+                for (const name of artistNames) next.add(name);
+            } else {
+                for (const name of artistNames) next.delete(name);
+            }
+            return next;
+        });
+    };
+
+    const handleFollowOne = (artistName: string) => {
+        followMutation.mutate(artistName, {
+            onSuccess: () => {
+                setSelectedToFollow((prev) => {
+                    const next = new Set(prev);
+                    next.delete(artistName);
+                    return next;
+                });
+            },
+        });
+    };
+
+    const handleFollowSelected = () => {
+        if (selectedToFollow.size === 0) return;
+        bulkFollowMutation.mutate([...selectedToFollow]);
+    };
+
     return (
         <Box {...props}>
             <Box
                 sx={(theme) => ({
                     display: 'flex',
-                    gap: 4,
+                    gap: 2,
                     width: '100%',
                     padding: 2,
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
                     [theme.breakpoints.down(500)]: {
                         flexDirection: 'column',
                         alignItems: 'flex-start',
@@ -190,6 +287,39 @@ function ArtistsListWrapper({
                         flexGrow: 1,
                     }}
                 />
+                <FormControlLabel
+                    control={
+                        <Switch
+                            size="small"
+                            checked={albumArtistOnly}
+                            onChange={(e) => onAlbumArtistOnlyChange(e.target.checked)}
+                        />
+                    }
+                    label={
+                        <Typography variant="body2" color="text.secondary">
+                            Album artists only
+                        </Typography>
+                    }
+                />
+                <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={handleFollowSelected}
+                    disabled={
+                        selectedToFollow.size === 0 ||
+                        followMutation.isPending ||
+                        bulkFollowMutation.isPending
+                    }
+                    startIcon={
+                        bulkFollowMutation.isPending ? (
+                            <CircularProgress size={14} />
+                        ) : (
+                            <UserRoundPlusIcon size={14} />
+                        )
+                    }
+                >
+                    Follow Selected ({selectedToFollow.size})
+                </Button>
                 <Typography
                     variant="caption"
                     color="text.secondary"
@@ -208,7 +338,18 @@ function ArtistsListWrapper({
                     minHeight: 0,
                 }}
             >
-                <ArtistsTable artists={filteredData} />
+                <ArtistsTable
+                    artists={filteredData}
+                    selectedToFollow={selectedToFollow}
+                    onToggleSelection={handleToggleSelection}
+                    onToggleSelectAll={handleToggleSelectAll}
+                    onFollowArtist={handleFollowOne}
+                    isFollowingArtist={(artistName) =>
+                        followMutation.isPending &&
+                        followMutation.variables === artistName
+                    }
+                    disableActions={bulkFollowMutation.isPending}
+                />
             </Box>
         </Box>
     );

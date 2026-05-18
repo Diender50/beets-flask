@@ -66,10 +66,7 @@ export const Route = createFileRoute('/library/browse/artists/$artist')({
         const p3 = opts.context.queryClient.ensureQueryData(
             itemsByArtistQueryOptions(opts.params.artist, true)
         );
-        const p4 = opts.context.queryClient.ensureQueryData(
-            missingAlbumsByArtistQueryOptions(opts.params.artist)
-        );
-        await Promise.all([p1, p2, p3, p4]);
+        await Promise.all([p1, p2, p3]);
     },
     component: RouteComponent,
 });
@@ -82,9 +79,6 @@ function RouteComponent() {
     );
     const { data: items } = useSuspenseQuery(
         itemsByArtistQueryOptions(params.artist, true)
-    );
-    const { data: missingAlbums } = useSuspenseQuery(
-        missingAlbumsByArtistQueryOptions(params.artist)
     );
 
     return (
@@ -100,7 +94,6 @@ function RouteComponent() {
             <Viewer
                 albums={albums}
                 items={items}
-                missingAlbums={missingAlbums}
                 artist={params.artist}
                 sx={(theme) => ({
                     flex: '1 1 auto',
@@ -184,22 +177,26 @@ function ArtistHeader({ sx, ...props }: BoxProps) {
 function Viewer({
     albums,
     items,
-    missingAlbums,
     artist,
     sx,
     ...props
 }: {
     albums: Album<false, true>[];
     items: Item<true>[];
-    missingAlbums: MissingAlbum[];
     artist: string;
 } & BoxProps) {
     const theme = useTheme();
-    const [selected, setSelected] = useState<'albums' | 'missing'>(() =>
-        albums.length > 0 ? 'albums' : 'missing'
-    );
+    const [selected, setSelected] = useState<'albums' | 'missing'>('albums');
     const [filter, setFilter] = useState('');
     const [albumTypeFilter, setAlbumTypeFilter] = useState<string | null>(null);
+
+    const missingAlbumsQuery = useQuery({
+        ...missingAlbumsByArtistQueryOptions(artist),
+        enabled: selected === 'missing',
+    });
+    const missingAlbums = missingAlbumsQuery.data ?? [];
+
+    const albumIds = useMemo(() => new Set(albums.map((a) => a.id)), [albums]);
 
     const albumTypes = useMemo(() => {
         const types = new Set<string>();
@@ -229,10 +226,45 @@ function Viewer({
     const trackCountByAlbumId = useMemo(() => {
         const map = new Map<number, number>();
         for (const item of items) {
-            map.set(item.album_id, (map.get(item.album_id) ?? 0) + 1);
+            if (albumIds.has(item.album_id)) {
+                map.set(item.album_id, (map.get(item.album_id) ?? 0) + 1);
+            }
         }
         return map;
-    }, [items]);
+    }, [items, albumIds]);
+
+    // Items where this artist is featured but is NOT the albumartist
+    const featuredByAlbum = useMemo(() => {
+        const map = new Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>();
+        for (const item of items) {
+            if (albumIds.has(item.album_id)) continue;
+            if (!map.has(item.album_id)) {
+                map.set(item.album_id, {
+                    albumName: item.album,
+                    albumArtist: item.albumartist,
+                    tracks: [],
+                });
+            }
+            map.get(item.album_id)!.tracks.push(item);
+        }
+        return map;
+    }, [items, albumIds]);
+
+    const filteredFeaturedByAlbum = useMemo(() => {
+        if (!filter) return featuredByAlbum;
+        const result = new Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>();
+        for (const [albumId, entry] of featuredByAlbum) {
+            const matchAlbum = entry.albumName.toLowerCase().includes(filter.toLowerCase());
+            const matchArtist = entry.albumArtist.toLowerCase().includes(filter.toLowerCase());
+            const matchTrack = entry.tracks.some((t) =>
+                t.name.toLowerCase().includes(filter.toLowerCase())
+            );
+            if (matchAlbum || matchArtist || matchTrack) {
+                result.set(albumId, entry);
+            }
+        }
+        return result;
+    }, [featuredByAlbum, filter]);
 
     const nAlbumsRemovedByFilter = albums.length - filteredAlbums.length;
     const nMissingRemovedByFilter =
@@ -303,16 +335,20 @@ function Viewer({
                                 <AlbumIcon size={theme.iconSize.lg} />
                             </ToggleButton>
                             <ToggleButton value="missing">
-                                <Badge
-                                    badgeContent={missingAlbums.length}
-                                    color="error"
-                                    max={99}
-                                    sx={{ '& .MuiBadge-badge': { fontSize: 10, height: 16, minWidth: 16 } }}
-                                >
-                                    <Typography variant="body2" sx={{ pr: missingAlbums.length > 0 ? 1 : 0 }}>
-                                        Missing
-                                    </Typography>
-                                </Badge>
+                                {missingAlbumsQuery.data ? (
+                                    <Badge
+                                        badgeContent={missingAlbums.length}
+                                        color="error"
+                                        max={99}
+                                        sx={{ '& .MuiBadge-badge': { fontSize: 10, height: 16, minWidth: 16 } }}
+                                    >
+                                        <Typography variant="body2" sx={{ pr: missingAlbums.length > 0 ? 1 : 0 }}>
+                                            Missing
+                                        </Typography>
+                                    </Badge>
+                                ) : (
+                                    <Typography variant="body2">Missing</Typography>
+                                )}
                             </ToggleButton>
                         </ToggleButtonGroup>
                     </Box>
@@ -363,8 +399,24 @@ function Viewer({
                 {selected === 'albums' && (
                     <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} />
                 )}
+                {selected === 'albums' && filteredFeaturedByAlbum.size > 0 && (
+                    <FeaturedOnViewer featuredByAlbum={filteredFeaturedByAlbum} />
+                )}
                 {selected === 'missing' && (
-                    <MissingAlbumsViewer albums={filteredMissingAlbums} artist={artist} />
+                    missingAlbumsQuery.isLoading ? (
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                height: '100%',
+                            }}
+                        >
+                            <CircularProgress size={20} />
+                        </Box>
+                    ) : (
+                        <MissingAlbumsViewer albums={filteredMissingAlbums} artist={artist} />
+                    )
                 )}
             </Box>
         </Box>
@@ -396,14 +448,7 @@ function AlbumsViewer({
 
     if (albums.length === 0) {
         return (
-            <Box
-                sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100%',
-                }}
-            >
+            <Box sx={{ py: 2, px: 1 }}>
                 <Typography variant="body1" color="text.secondary">
                     No albums found.
                 </Typography>
@@ -474,6 +519,95 @@ function AlbumsViewer({
                                         {trackCountByAlbumId.get(album.id) ?? '-'}
                                     </TableCell>
                                     <TableCell>{album.year ?? '-'}</TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </Box>
+            ))}
+        </Box>
+    );
+}
+
+function FeaturedOnViewer({
+    featuredByAlbum,
+}: {
+    featuredByAlbum: Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>;
+}) {
+    const navigate = useNavigate();
+    return (
+        <Box sx={{ mt: 2, mb: 3 }}>
+            <Typography
+                variant="subtitle2"
+                color="text.secondary"
+                sx={{
+                    px: 1,
+                    py: 0.5,
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 1,
+                    backgroundColor: 'background.paper',
+                    borderBottom: 1,
+                    borderColor: 'divider',
+                }}
+            >
+                Featured on ({featuredByAlbum.size})
+            </Typography>
+            {[...featuredByAlbum.entries()].map(([albumId, entry]) => (
+                <Box key={albumId} sx={{ mb: 2 }}>
+                    <Box
+                        sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            px: 1,
+                            py: 0.5,
+                            cursor: 'pointer',
+                            '&:hover': { backgroundColor: 'action.hover' },
+                            borderRadius: 1,
+                        }}
+                        onClick={() =>
+                            void navigate({
+                                to: '/library/album/$albumId',
+                                params: { albumId: albumId },
+                            })
+                        }
+                    >
+                        <CoverArt
+                            type="album"
+                            beetsId={albumId}
+                            sx={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 0.5, flexShrink: 0 }}
+                        />
+                        <Box>
+                            <Typography variant="body2" fontWeight="medium">
+                                {entry.albumName}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                                {entry.albumArtist}
+                            </Typography>
+                        </Box>
+                    </Box>
+                    <Table size="small">
+                        <TableBody>
+                            {entry.tracks.map((track) => (
+                                <TableRow key={track.id} hover sx={{ cursor: 'pointer' }}
+                                    onClick={() =>
+                                        void navigate({
+                                            to: '/library/album/$albumId',
+                                            params: { albumId: track.album_id },
+                                        })
+                                    }
+                                >
+                                    <TableCell sx={{ pl: 2, color: 'text.secondary', width: 32 }}>
+                                        <TrackIcon size={14} />
+                                    </TableCell>
+                                    <TableCell>{track.name}</TableCell>
+                                    <TableCell sx={{ color: 'text.secondary', width: 200 }}>
+                                        {track.artist}
+                                    </TableCell>
+                                    <TableCell sx={{ width: 60, color: 'text.secondary' }} align="right">
+                                        {track.year ?? '-'}
+                                    </TableCell>
                                 </TableRow>
                             ))}
                         </TableBody>
