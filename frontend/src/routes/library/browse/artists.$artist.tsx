@@ -750,6 +750,14 @@ function asNumber(value: unknown): number | null {
     return null;
 }
 
+function deemixDetailsToQuality(details: Record<string, unknown>): DownloadQuality {
+    const container = String(details.container ?? '').toLowerCase();
+    const kbps = typeof details.kbps === 'number' ? details.kbps : null;
+    if (container === 'flac' || (kbps !== null && kbps >= 1000)) return 'flac';
+    if (kbps !== null && kbps >= 256) return '320';
+    return '128';
+}
+
 function trackMatchColor(resultTrackCount: number | null, expectedTrackCount: number | null) {
     if (resultTrackCount === null || expectedTrackCount === null || expectedTrackCount <= 0) {
         return 'text.secondary';
@@ -916,6 +924,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     provider: 'deemix',
                     deezer_id: String(choice.details.deezer_id ?? deezerId ?? ''),
                     release_id: releaseId,
+                    quality: deemixDetailsToQuality(choice.details),
                 });
             }
             if (choice.provider === 'squidwtf') {
