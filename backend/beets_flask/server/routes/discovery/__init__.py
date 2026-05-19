@@ -231,6 +231,35 @@ def _quality_to_slskd_min_bitrate(quality: str) -> int:
     return 320
 
 
+def _quality_rank(quality: str) -> int:
+    if quality == "flac":
+        return 3
+    if quality == "320":
+        return 2
+    return 1
+
+
+def _deemix_available_quality(account_quality: dict | None) -> str:
+    """Map deemix account capability to one of: flac|320|128."""
+    if not isinstance(account_quality, dict):
+        return "128"
+
+    container = str(account_quality.get("container") or "").casefold()
+    kbps_val = account_quality.get("kbps")
+    try:
+        kbps = int(kbps_val) if kbps_val is not None else None
+    except Exception:
+        kbps = None
+
+    if "flac" in container or "lossless" in container:
+        return "flac"
+    if kbps is not None and kbps >= 1000:
+        return "flac"
+    if kbps is not None and kbps >= 320:
+        return "320"
+    return "128"
+
+
 async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
     provider = str(data.get("provider", "deemix")).strip().casefold()
     album = str(data.get("album", ""))
@@ -365,6 +394,197 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
     return ({"error": "provider must be 'deemix', 'slskd' or 'squidwtf'"}, 400)
 
 
+async def _find_best_match_across_providers(
+    album_payload: dict,
+    providers: list[str],
+    qualities: list[str],
+) -> dict | None:
+    """Search all providers across quality priorities and return best match payload.
+    
+    Quality priority: flac > 320 > 128
+    Within same quality: highest match score wins
+    """
+    artist = str(album_payload.get("artist", "")).strip()
+    album = str(album_payload.get("album", "")).strip()
+    release_id = str(album_payload.get("release_id", "")).strip() or None
+    
+    if not artist and not album:
+        log.warning("_find_best_match: no artist or album")
+        return None
+    
+    dcfg = _deemix_settings()
+    scfg = _slskd_settings()
+    wcfg = _squidwtf_settings()
+    deemix_account_quality: dict | None = None
+    deemix_max_quality = "128"
+    if "deemix" in providers and dcfg["base_url"]:
+        try:
+            deemix_account_quality = await deemix_provider.resolve_quality_from_arl(
+                base_url=dcfg["base_url"],
+                timeout_seconds=dcfg["timeout_seconds"],
+                auth_header=dcfg["auth_header"],
+                arl=dcfg["arl"],
+            )
+        except Exception as exc:
+            log.warning("_find_best_match: deemix account quality detection failed: %s", exc)
+            deemix_account_quality = None
+        deemix_max_quality = _deemix_available_quality(deemix_account_quality)
+    
+    # Quality priority order
+    quality_priority = ["flac", "320", "128"]
+    # Filter to only requested qualities, maintaining priority order
+    requested_qualities = [q for q in quality_priority if q in qualities]
+    
+    for quality in requested_qualities:
+        log.info("_find_best_match: trying quality=%s artist=%s album=%s", quality, artist, album)
+        
+        results: list[tuple[float, dict]] = []
+        
+        # Try each provider for this quality
+        for provider in providers:
+            try:
+                if provider == "deemix":
+                    if not dcfg["base_url"]:
+                        log.debug("deemix not configured, skipping")
+                        continue
+
+                    if _quality_rank(quality) > _quality_rank(deemix_max_quality):
+                        log.info(
+                            "_find_best_match: skipping deemix quality=%s (account_max=%s)",
+                            quality,
+                            deemix_max_quality,
+                        )
+                        continue
+                    
+                    # Try deezer ID if provided
+                    deezer_id = str(album_payload.get("deezer_id", "")).strip() or None
+                    deemix_match_score = 1.0
+                    if not deezer_id:
+                        # Search for match
+                        query_attempts = [(artist, album)]
+                        fallback_artist = _strip_accents(artist)
+                        fallback_album = _strip_accents(album)
+                        if (fallback_artist, fallback_album) != (artist, album):
+                            query_attempts.append((fallback_artist, fallback_album))
+                        
+                        for q_artist, q_album in query_attempts:
+                            try:
+                                match = await deemix_provider.resolve_deezer_match_for_album(
+                                    artist=q_artist,
+                                    album=q_album,
+                                    timeout_seconds=dcfg["timeout_seconds"],
+                                )
+                                if match:
+                                    deezer_id = match.get("deezer_id")
+                                    deemix_match_score = float(match.get("score") or 0.0)
+                                    break
+                            except Exception as exc:
+                                log.debug("deemix match search failed: %s", exc)
+                    
+                    if deezer_id:
+                        payload = dict(album_payload)
+                        payload.update({
+                            "provider": "deemix",
+                            "quality": quality,
+                            "deezer_id": deezer_id,
+                        })
+                        results.append((deemix_match_score, payload))
+                        log.debug(
+                            "deemix: found match deezer_id=%s score=%.2f max_quality=%s",
+                            deezer_id,
+                            deemix_match_score,
+                            deemix_max_quality,
+                        )
+                
+                elif provider == "slskd":
+                    if not scfg["base_url"]:
+                        log.debug("slskd not configured, skipping")
+                        continue
+                    
+                    candidates = []
+                    try:
+                        candidates = await slskd_provider.search_album(
+                            base_url=scfg["base_url"],
+                            api_key=scfg["api_key"],
+                            artist=artist,
+                            album=album,
+                            timeout_seconds=scfg["timeout_seconds"],
+                        )
+                    except Exception as exc:
+                        log.debug("slskd search failed: %s", exc)
+                    
+                    if candidates:
+                        ranked = slskd_provider.rank_candidates(
+                            candidates,
+                            ranking_mode=scfg["ranking_mode"],
+                            min_bitrate_kbps=max(
+                                scfg["min_bitrate_kbps"],
+                                _quality_to_slskd_min_bitrate(quality),
+                            ),
+                        )
+                        if ranked:
+                            best_candidate = ranked[0]
+                            score = float(slskd_provider.score_candidate(
+                                best_candidate,
+                                ranking_mode=scfg["ranking_mode"],
+                                min_bitrate_kbps=max(
+                                    scfg["min_bitrate_kbps"],
+                                    _quality_to_slskd_min_bitrate(quality),
+                                ),
+                            )) / 100.0  # Normalize to 0-1 range
+                            
+                            payload = dict(album_payload)
+                            payload.update({
+                                "provider": "slskd",
+                                "quality": quality,
+                                "candidate": best_candidate,
+                            })
+                            results.append((score, payload))
+                            log.debug("slskd: found match score=%.2f", score)
+                
+                elif provider == "squidwtf":
+                    if not wcfg["base_url"]:
+                        log.debug("squidwtf not configured, skipping")
+                        continue
+                    
+                    squid_album_id = str(album_payload.get("squid_album_id", "")).strip() or None
+                    if not squid_album_id:
+                        try:
+                            match = await squidwtf_provider.resolve_squidwtf_match_for_album(
+                                artist=artist,
+                                album=album,
+                                timeout_seconds=min(20, wcfg["timeout_seconds"]),
+                                base_url=wcfg["base_url"],
+                            )
+                            if match:
+                                squid_album_id = str(match.get("squid_album_id") or "").strip()
+                        except Exception as exc:
+                            log.debug("squidwtf match search failed: %s", exc)
+                    
+                    if squid_album_id:
+                        payload = dict(album_payload)
+                        payload.update({
+                            "provider": "squidwtf",
+                            "quality": quality,
+                            "squid_album_id": squid_album_id,
+                        })
+                        results.append((1.0, payload))  # squidwtf gets score 1.0 if found
+                        log.debug("squidwtf: found match album_id=%s", squid_album_id)
+            
+            except Exception as exc:
+                log.warning("_find_best_match: error searching provider=%s quality=%s: %s", provider, quality, exc)
+        
+        # If we found matches for this quality, return the best one
+        if results:
+            best_score, best_payload = max(results, key=lambda x: x[0])
+            log.info("_find_best_match: selected provider=%s quality=%s score=%.2f", 
+                     best_payload.get("provider"), best_payload.get("quality"), best_score)
+            return best_payload
+    
+    log.warning("_find_best_match: no match found for artist=%s album=%s", artist, album)
+    return None
+
+
 @discovery_bp.route("/search/artists", methods=["GET"])
 async def search_artists():
     q = request.args.get("q", "").strip()
@@ -441,8 +661,23 @@ async def start_download_batch():
     if not isinstance(data, dict):
         return jsonify({"error": "request body is required"}), 400
 
-    provider = str(data.get("provider", "deemix")).strip().casefold()
-    quality = _normalize_download_quality(str(data.get("quality", "flac")))
+    providers_raw = data.get("providers", ["deemix"])
+    qualities_raw = data.get("qualities", ["flac"])
+    
+    if not isinstance(providers_raw, list) or len(providers_raw) == 0:
+        providers_raw = ["deemix"]
+    if not isinstance(qualities_raw, list) or len(qualities_raw) == 0:
+        qualities_raw = ["flac"]
+    
+    providers = [str(p).strip().casefold() for p in providers_raw]
+    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf")]
+    qualities = [_normalize_download_quality(str(q)) for q in qualities_raw]
+    
+    if not providers:
+        providers = ["deemix"]
+    if not qualities:
+        qualities = ["flac"]
+    
     albums = data.get("albums")
     if not isinstance(albums, list) or len(albums) == 0:
         return jsonify({"error": "albums must be a non-empty list"}), 400
@@ -454,9 +689,22 @@ async def start_download_batch():
             errors.append({"index": idx, "error": "album payload must be an object"})
             continue
 
-        payload = dict(album_payload)
-        payload.setdefault("provider", provider)
-        payload.setdefault("quality", quality)
+        # Search all providers with quality priority
+        payload = await _find_best_match_across_providers(
+            album_payload=album_payload,
+            providers=providers,
+            qualities=qualities,
+        )
+        
+        if not payload:
+            errors.append({
+                "index": idx,
+                "artist": str(album_payload.get("artist", "")),
+                "album": str(album_payload.get("album", "")),
+                "error": "No match found across selected providers and qualities",
+                "status": 404,
+            })
+            continue
 
         job_or_error, status = await _schedule_download_from_payload(payload)
         if 200 <= status < 300:
@@ -471,8 +719,8 @@ async def start_download_batch():
             })
 
     return jsonify({
-        "provider": provider,
-        "quality": quality,
+        "providers": providers,
+        "qualities": qualities,
         "requested": len(albums),
         "queued": len(jobs),
         "failed": len(errors),

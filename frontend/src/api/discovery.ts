@@ -165,8 +165,8 @@ export async function startDownload(opts: {
 }
 
 export async function startBatchDownload(opts: {
-    provider: 'deemix' | 'slskd' | 'squidwtf';
-    quality: DownloadQuality;
+    providers: Array<'deemix' | 'slskd' | 'squidwtf'>;
+    qualities: DownloadQuality[];
     albums: Array<{
         album: string;
         artist: string;
@@ -175,8 +175,8 @@ export async function startBatchDownload(opts: {
         squid_album_id?: string;
     }>;
 }): Promise<{
-    provider: string;
-    quality: DownloadQuality;
+    providers: string[];
+    qualities: DownloadQuality[];
     requested: number;
     queued: number;
     failed: number;

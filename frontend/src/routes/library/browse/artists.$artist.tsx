@@ -15,6 +15,8 @@ import {
     Collapse,
     Divider,
     FormControl,
+    FormControlLabel,
+    FormGroup,
     IconButton,
     InputLabel,
     List as MuiList,
@@ -996,57 +998,54 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         status === 'done' ? 'success' : status === 'error' ? 'error' : status ? 'warning' : 'default';
 
     return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.25 }}>
-            <Tooltip title={tooltipTitle}>
+        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+            <Tooltip
+                placement="left"
+                title={
+                    <Box>
+                        <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.25 }}>
+                            {tooltipTitle}
+                        </Typography>
+                        {detailLines.slice(0, 4).map((line) => (
+                            <Typography key={line} variant="caption" sx={{ display: 'block', lineHeight: 1.3 }}>
+                                {line}
+                            </Typography>
+                        ))}
+                    </Box>
+                }
+            >
                 <span>
-                    <IconButton
+                    <Button
                         size="small"
+                        variant={status === 'done' ? 'contained' : 'outlined'}
+                        color={status === 'done' ? 'success' : status === 'error' ? 'error' : 'primary'}
                         onClick={openDialog}
                         disabled={mutation.isPending || status === 'pending' || status === 'downloading'}
-                        color={iconColor}
+                        startIcon={
+                            mutation.isPending || status === 'pending' || status === 'downloading' ? (
+                                <CircularProgress size={12} />
+                            ) : status === 'done' ? (
+                                <CheckIcon size={14} />
+                            ) : status === 'error' ? (
+                                <XCircleIcon size={14} />
+                            ) : (
+                                <DownloadIcon size={14} />
+                            )
+                        }
+                        sx={{
+                            minWidth: 86,
+                            height: 28,
+                            px: 1,
+                            borderRadius: 1,
+                            fontSize: 11,
+                            textTransform: 'none',
+                            fontWeight: 700,
+                        }}
                     >
-                        {mutation.isPending || status === 'pending' || status === 'downloading' ? (
-                            <CircularProgress size={14} />
-                        ) : status === 'done' ? (
-                            <CheckIcon size={16} />
-                        ) : status === 'error' ? (
-                            <XCircleIcon size={16} />
-                        ) : (
-                            <DownloadIcon size={16} />
-                        )}
-                    </IconButton>
+                        {statusText}
+                    </Button>
                 </span>
             </Tooltip>
-            <Typography
-                variant="caption"
-                sx={{ lineHeight: 1, textAlign: 'center', color: status === 'error' ? 'error.main' : 'text.secondary' }}
-            >
-                {statusText}
-            </Typography>
-            <Box sx={{ width: 220, mt: 0.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                {detailLines.length > 0 && (
-                    <Alert
-                        severity={status === 'error' ? 'error' : status === 'done' ? 'success' : 'info'}
-                        variant="outlined"
-                        sx={{ p: 0.5, '.MuiAlert-message': { py: 0, width: '100%' } }}
-                    >
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-                            {detailLines.slice(0, 4).map((line) => (
-                                <Typography key={line} variant="caption" sx={{ lineHeight: 1.2 }}>
-                                    {line}
-                                </Typography>
-                            ))}
-                        </Box>
-                    </Alert>
-                )}
-                {status === 'error' && currentJob?.error && (
-                    <Alert severity="error" variant="filled" sx={{ p: 0.5, '.MuiAlert-message': { py: 0, width: '100%' } }}>
-                        <Typography variant="caption" sx={{ lineHeight: 1.2 }}>
-                            {currentJob.error}
-                        </Typography>
-                    </Alert>
-                )}
-            </Box>
             <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="md">
                 <DialogTitle>Choose download result</DialogTitle>
                 <DialogContent dividers>
@@ -1204,8 +1203,10 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
     const queryClient = useQueryClient();
     const [refreshing, setRefreshing] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [batchProvider, setBatchProvider] = useState<'deemix' | 'slskd' | 'squidwtf'>('deemix');
-    const [batchQuality, setBatchQuality] = useState<DownloadQuality>('flac');
+    const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf'>>(
+        new Set(['deemix'])
+    );
+    const [batchQualities, setBatchQualities] = useState<Set<DownloadQuality>>(new Set(['flac']));
 
     const albumEntries = useMemo(() => {
         return albums.map((album, idx) => ({
@@ -1252,8 +1253,8 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
             });
 
             return startBatchDownload({
-                provider: batchProvider,
-                quality: batchQuality,
+                providers: Array.from(batchProviders),
+                qualities: Array.from(batchQualities),
                 albums: payload,
             });
         },
@@ -1323,55 +1324,135 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
             <Box
                 sx={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 1,
-                    alignItems: 'center',
-                    px: 1,
-                    py: 1,
+                    display: 'grid',
+                    gridTemplateColumns: 'auto 1fr',
+                    gap: 2,
+                    alignItems: 'stretch',
+                    px: 1.25,
+                    py: 1.25,
                     mb: 1,
                     border: 1,
                     borderColor: 'divider',
                     borderRadius: 1,
+                    backgroundColor: 'grey.900',
                 }}
             >
-                <Button
-                    variant="contained"
-                    size="small"
-                    disabled={selectedIds.size === 0 || batchMutation.isPending}
-                    onClick={() => batchMutation.mutate()}
+                <Box
+                    sx={{
+                        pr: 2,
+                        borderRight: 1,
+                        borderColor: 'divider',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        gap: 0.5,
+                    }}
                 >
-                    {batchMutation.isPending
-                        ? 'Scheduling...'
-                        : `Batch download (${selectedIds.size})`}
-                </Button>
-                <FormControl size="small" sx={{ minWidth: 120 }}>
-                    <InputLabel id="batch-provider-label">Provider</InputLabel>
-                    <Select
-                        labelId="batch-provider-label"
-                        label="Provider"
-                        value={batchProvider}
-                        onChange={(e) => setBatchProvider(e.target.value as 'deemix' | 'slskd' | 'squidwtf')}
+                    <Button
+                        variant="contained"
+                        color="primary"
+                        disableElevation
+                        size="small"
+                        disabled={
+                            selectedIds.size === 0 ||
+                            batchMutation.isPending ||
+                            batchProviders.size === 0 ||
+                            batchQualities.size === 0
+                        }
+                        onClick={() => batchMutation.mutate()}
+                        sx={{
+                            minWidth: 190,
+                            height: 36,
+                            fontWeight: 700,
+                            letterSpacing: 0.2,
+                            textTransform: 'none',
+                        }}
                     >
-                        <MenuItem value="deemix">deemix</MenuItem>
-                        <MenuItem value="slskd">slskd</MenuItem>
-                        <MenuItem value="squidwtf">squidwtf</MenuItem>
-                    </Select>
-                </FormControl>
-                <FormControl size="small" sx={{ minWidth: 120 }}>
-                    <InputLabel id="batch-quality-label">Quality</InputLabel>
-                    <Select
-                        labelId="batch-quality-label"
-                        label="Quality"
-                        value={batchQuality}
-                        onChange={(e) => setBatchQuality(e.target.value as DownloadQuality)}
-                    >
-                        <MenuItem value="flac">FLAC</MenuItem>
-                        <MenuItem value="320">MP3 320</MenuItem>
-                        <MenuItem value="128">MP3 128</MenuItem>
-                    </Select>
-                </FormControl>
-                <Box sx={{ flex: '1 1 auto' }} />
+                        {batchMutation.isPending
+                            ? 'Scheduling...'
+                            : `Batch Download (${selectedIds.size})`}
+                    </Button>
+                    <FormControlLabel
+                        sx={{ m: 0 }}
+                        control={
+                            <Checkbox
+                                size="small"
+                                checked={allSelected}
+                                indeterminate={selectedIds.size > 0 && !allSelected}
+                                onChange={toggleAll}
+                            />
+                        }
+                        label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Select all</Typography>}
+                    />
+                </Box>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, alignItems: 'start' }}>
+                    <FormControl component="fieldset" size="small">
+                        <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
+                            Providers
+                        </Typography>
+                        <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
+                        {(['deemix', 'slskd', 'squidwtf'] as const).map((provider) => (
+                            <FormControlLabel
+                                key={provider}
+                                sx={{ mr: 1.5, ml: 0, alignItems: 'center' }}
+                                control={
+                                    <Checkbox
+                                        size="small"
+                                        checked={batchProviders.has(provider)}
+                                        onChange={(e) => {
+                                            setBatchProviders((prev) => {
+                                                const next = new Set(prev);
+                                                if (e.target.checked) {
+                                                    next.add(provider);
+                                                } else {
+                                                    next.delete(provider);
+                                                }
+                                                return next;
+                                            });
+                                        }}
+                                    />
+                                }
+                                label={<Typography variant="caption" sx={{ textTransform: 'lowercase' }}>{provider}</Typography>}
+                            />
+                        ))}
+                        </FormGroup>
+                    </FormControl>
+                    <FormControl component="fieldset" size="small">
+                        <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
+                            Qualities
+                        </Typography>
+                        <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
+                        {(['flac', '320', '128'] as const).map((quality) => (
+                            <FormControlLabel
+                                key={quality}
+                                sx={{ mr: 1.5, ml: 0, alignItems: 'center' }}
+                                control={
+                                    <Checkbox
+                                        size="small"
+                                        checked={batchQualities.has(quality)}
+                                        onChange={(e) => {
+                                            setBatchQualities((prev) => {
+                                                const next = new Set(prev);
+                                                if (e.target.checked) {
+                                                    next.add(quality);
+                                                } else {
+                                                    next.delete(quality);
+                                                }
+                                                return next;
+                                            });
+                                        }}
+                                    />
+                                }
+                                label={
+                                    <Typography variant="caption">
+                                        {quality === 'flac' ? 'FLAC' : `MP3 ${quality}`}
+                                    </Typography>
+                                }
+                            />
+                        ))}
+                        </FormGroup>
+                    </FormControl>
+                </Box>
                 {batchMutation.isError && (
                     <Typography variant="caption" color="error.main">
                         {(batchMutation.error as Error)?.message ?? 'Batch scheduling failed'}
@@ -1385,41 +1466,63 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
             </Box>
             {orderedTypes.map((type) => (
                 <Box key={type} sx={{ mb: 3 }}>
-                    <Typography
-                        variant="subtitle2"
-                        color="text.secondary"
-                        sx={{
-                            px: 1,
-                            py: 0.5,
-                            position: 'sticky',
-                            top: 0,
-                            zIndex: 1,
-                            backgroundColor: 'background.paper',
-                            borderBottom: 1,
-                            borderColor: 'divider',
-                        }}
-                    >
-                        {RELEASE_TYPE_LABELS[type] ?? type} ({grouped.get(type)!.length})
-                    </Typography>
-                    <Table size="small">
+                    {(() => {
+                        const typeEntries = grouped.get(type) ?? [];
+                        const typeSelected = typeEntries.filter((e) => selectedIds.has(e.id)).length;
+                        const allTypeSelected = typeEntries.length > 0 && typeSelected === typeEntries.length;
+                        const typeIndeterminate = typeSelected > 0 && !allTypeSelected;
+
+                        return (
+                            <Box
+                                sx={{
+                                    px: 1,
+                                    py: 0.25,
+                                    position: 'sticky',
+                                    top: 0,
+                                    zIndex: 1,
+                                    backgroundColor: 'background.paper',
+                                    borderBottom: 1,
+                                    borderColor: 'divider',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 1,
+                                }}
+                            >
+                                <Tooltip title={allTypeSelected ? 'Unselect this type' : 'Select this type'}>
+                                    <Checkbox
+                                        size="small"
+                                        checked={allTypeSelected}
+                                        indeterminate={typeIndeterminate}
+                                        onChange={() => {
+                                            setSelectedIds((prev) => {
+                                                const next = new Set(prev);
+                                                if (allTypeSelected) {
+                                                    typeEntries.forEach((e) => next.delete(e.id));
+                                                } else {
+                                                    typeEntries.forEach((e) => next.add(e.id));
+                                                }
+                                                return next;
+                                            });
+                                        }}
+                                    />
+                                </Tooltip>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                    {RELEASE_TYPE_LABELS[type] ?? type} ({typeEntries.length})
+                                </Typography>
+                            </Box>
+                        );
+                    })()}
+                    <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
                         <TableHead>
                             <TableRow>
-                                <TableCell sx={{ width: 44, py: 0.5 }}>
-                                    <Tooltip title={allSelected ? 'Unselect all' : 'Select all'}>
-                                        <Checkbox
-                                            size="small"
-                                            checked={allSelected}
-                                            indeterminate={selectedIds.size > 0 && !allSelected}
-                                            onChange={toggleAll}
-                                        />
-                                    </Tooltip>
+                                <TableCell sx={{ width: 44, py: 0.75 }}>
                                 </TableCell>
                                 <TableCell sx={{ width: 44 }} />
-                                <TableCell>Album</TableCell>
-                                <TableCell sx={{ width: 60 }} align="right">Tracks</TableCell>
-                                <TableCell sx={{ width: 60 }}>Year</TableCell>
-                                <TableCell sx={{ width: 48 }} />
-                                <TableCell sx={{ width: 48 }} />
+                                <TableCell sx={{ pl: 1.5 }}>Album</TableCell>
+                                <TableCell sx={{ width: 72 }} align="right">Tracks</TableCell>
+                                <TableCell sx={{ width: 72 }} align="left">Year</TableCell>
+                                <TableCell sx={{ width: 52 }} />
+                                <TableCell sx={{ width: 104, textAlign: 'center' }}>Download</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
@@ -1498,7 +1601,7 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                                     </Box>
                                                 )}
                                             </TableCell>
-                                            <TableCell>
+                                            <TableCell sx={{ pl: 1.5 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                     {album.mb_releasegroupid && (
                                                         isExpanded
@@ -1508,11 +1611,11 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                                     {album.album}
                                                 </Box>
                                             </TableCell>
-                                            <TableCell align="right" sx={{ color: 'text.secondary' }}>
+                                            <TableCell align="right" sx={{ width: 72, color: 'text.secondary' }}>
                                                 <MissingAlbumTrackCount album={album} />
                                             </TableCell>
-                                            <TableCell>{album.year ?? '-'}</TableCell>
-                                            <TableCell sx={{ p: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                                            <TableCell sx={{ width: 72 }}>{album.year ?? '-'}</TableCell>
+                                            <TableCell sx={{ p: 0.5, width: 52 }} onClick={(e) => e.stopPropagation()}>
                                                 {deezerUrl && (
                                                     <Tooltip
                                                         title={
@@ -1533,7 +1636,7 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                                     </Tooltip>
                                                 )}
                                             </TableCell>
-                                            <TableCell sx={{ p: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                                            <TableCell sx={{ p: 0.5, width: 104, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                                                 <DownloadButton album={album} artist={artist} />
                                             </TableCell>
                                         </TableRow>

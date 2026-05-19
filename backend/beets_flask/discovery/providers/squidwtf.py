@@ -225,7 +225,7 @@ async def download_album(
             if not tracks:
                 return (False, "squidwtf album has no tracks")
 
-            target_dir = Path(output_path) / artist / title
+            target_dir = Path(output_path) / f"{artist} - {title}"
             target_dir.mkdir(parents=True, exist_ok=True)
             extension = _quality_to_ext(quality)
 
