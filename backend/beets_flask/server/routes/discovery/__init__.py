@@ -29,6 +29,7 @@ from beets_flask.discovery.followed_artists import (
     is_followed,
     unfollow_artist,
 )
+from beets_flask.library_cache import get_missing_count_map, invalidate_missing_cache_for_string, normalize_artist_key
 from beets_flask.logger import log
 
 discovery_bp = Blueprint("discovery", __name__, url_prefix="/discovery")
@@ -668,7 +669,11 @@ async def search_artists():
 
 @discovery_bp.route("/artists", methods=["GET"])
 async def list_followed_artists():
-    return jsonify(get_followed_artists())
+    artists = get_followed_artists()
+    missing_map = get_missing_count_map()
+    for a in artists:
+        a["missing_count"] = missing_map.get(normalize_artist_key(a["name"]), 0)
+    return jsonify(artists)
 
 
 @discovery_bp.route("/artists", methods=["POST"])
@@ -684,6 +689,7 @@ async def add_followed_artist():
 @discovery_bp.route("/artists/<path:name>", methods=["DELETE"])
 async def remove_followed_artist(name: str):
     unfollow_artist(name)
+    invalidate_missing_cache_for_string(name)
     return jsonify({"ok": True})
 
 

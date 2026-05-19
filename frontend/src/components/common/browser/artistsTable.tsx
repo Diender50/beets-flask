@@ -11,22 +11,24 @@ import {
     Box,
     Button,
     CircularProgress,
-    Chip,
     Paper,
     Tooltip,
     Typography,
+    useTheme,
 } from '@mui/material';
-import { CheckIcon, UserRoundPlusIcon } from 'lucide-react';
+import { CheckIcon, UserRoundMinusIcon, UserRoundPlusIcon } from 'lucide-react';
 import { Link } from '@tanstack/react-router';
 import { Artist } from '@/api/library';
 
 export interface ArtistsTableProps {
     artists: Artist[];
-    selectedToFollow: Set<string>;
+    selected: Set<string>;
     onToggleSelection: (artistName: string, checked: boolean) => void;
     onToggleSelectAll: (checked: boolean, artistNames: string[]) => void;
     onFollowArtist: (artistName: string) => void;
     isFollowingArtist: (artistName: string) => boolean;
+    onUnfollowArtist: (artistName: string) => void;
+    isUnfollowingArtist: (artistName: string) => boolean;
     disableActions?: boolean;
 }
 
@@ -35,13 +37,16 @@ type SortOrder = 'asc' | 'desc';
 
 export function ArtistsTable({
     artists,
-    selectedToFollow,
+    selected,
     onToggleSelection,
     onToggleSelectAll,
     onFollowArtist,
     isFollowingArtist,
+    onUnfollowArtist,
+    isUnfollowingArtist,
     disableActions = false,
 }: ArtistsTableProps) {
+    const theme = useTheme();
     const [sortField, setSortField] = useState<SortField>('artist');
     const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
@@ -99,18 +104,10 @@ export function ArtistsTable({
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
 
-    const selectableArtists = sorted
-        .filter((artist) => !artist.followed)
-        .map((artist) => artist.artist);
-    const selectedVisibleCount = selectableArtists.filter((name) =>
-        selectedToFollow.has(name)
-    ).length;
-    const allSelectableChecked =
-        selectableArtists.length > 0 &&
-        selectedVisibleCount === selectableArtists.length;
-    const someSelectableChecked =
-        selectedVisibleCount > 0 &&
-        selectedVisibleCount < selectableArtists.length;
+    const allNames = sorted.map((a: Artist) => a.artist);
+    const selectedVisibleCount = allNames.filter((name: string) => selected.has(name)).length;
+    const allChecked = allNames.length > 0 && selectedVisibleCount === allNames.length;
+    const someChecked = selectedVisibleCount > 0 && selectedVisibleCount < allNames.length;
 
     return (
         <TableContainer component={Paper}>
@@ -120,16 +117,13 @@ export function ArtistsTable({
                         <TableCell padding="checkbox" sx={{ width: 44 }}>
                             <Checkbox
                                 size="small"
-                                indeterminate={someSelectableChecked}
-                                checked={allSelectableChecked}
-                                disabled={selectableArtists.length === 0 || disableActions}
-                                onChange={(e) =>
-                                    onToggleSelectAll(
-                                        e.target.checked,
-                                        selectableArtists
-                                    )
+                                indeterminate={someChecked}
+                                checked={allChecked}
+                                disabled={allNames.length === 0 || disableActions}
+                                onChange={(e: { target: { checked: boolean } }) =>
+                                    onToggleSelectAll(e.target.checked, allNames)
                                 }
-                                inputProps={{ 'aria-label': 'Select artists to follow' }}
+                                inputProps={{ 'aria-label': 'Select all artists' }}
                             />
                         </TableCell>
                         <TableCell>
@@ -212,7 +206,6 @@ export function ArtistsTable({
                                 sx={{
                                     cursor: 'pointer',
                                     textDecoration: 'none',
-                                    opacity: artist.followed ? 0.75 : 1,
                                     '&:hover': {
                                         backgroundColor: 'action.hover',
                                     },
@@ -220,37 +213,39 @@ export function ArtistsTable({
                             >
                                 <TableCell
                                     padding="checkbox"
-                                    onClick={(e) => {
-                                        e.preventDefault();
+                                    onClick={(e: { stopPropagation: () => void }) => {
                                         e.stopPropagation();
                                     }}
                                 >
                                     <Checkbox
                                         size="small"
-                                        checked={selectedToFollow.has(artist.artist)}
-                                        disabled={artist.followed || disableActions}
-                                        onChange={(e) =>
-                                            onToggleSelection(
-                                                artist.artist,
-                                                e.target.checked
-                                            )
+                                        checked={selected.has(artist.artist)}
+                                        disabled={disableActions}
+                                        onChange={(_e: unknown, checked: boolean) =>
+                                            onToggleSelection(artist.artist, checked)
                                         }
                                         inputProps={{
-                                            'aria-label': `Select ${artist.artist} for bulk follow`,
+                                            'aria-label': `Select ${artist.artist}`,
                                         }}
                                     />
                                 </TableCell>
                                 <TableCell>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                                         {artist.artist || 'Unknown Artist'}
                                         {artist.followed && (
-                                            <Chip
-                                                label="following"
-                                                size="small"
-                                                variant="outlined"
-                                                color="primary"
-                                                sx={{ height: 18, fontSize: '0.65rem' }}
-                                            />
+                                            <Tooltip title="Following">
+                                                <Box
+                                                    component="span"
+                                                    sx={{
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        color: theme.palette.success.main,
+                                                        flexShrink: 0,
+                                                    }}
+                                                >
+                                                    <CheckIcon size={13} />
+                                                </Box>
+                                            </Tooltip>
                                         )}
                                     </Box>
                                 </TableCell>
@@ -260,23 +255,28 @@ export function ArtistsTable({
                                 <TableCell align="right">{formatBytes(artist.total_size)}</TableCell>
                                 <TableCell
                                     align="center"
-                                    onClick={(e) => {
+                                    onClick={(e: { preventDefault: () => void; stopPropagation: () => void }) => {
                                         e.preventDefault();
                                         e.stopPropagation();
                                     }}
                                 >
                                     {artist.followed ? (
-                                        <Tooltip title="Followed">
-                                            <Box
-                                                sx={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    color: 'success.main',
-                                                }}
-                                            >
-                                                <CheckIcon size={16} />
-                                            </Box>
-                                        </Tooltip>
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            color="error"
+                                            onClick={() => onUnfollowArtist(artist.artist)}
+                                            disabled={disableActions || isUnfollowingArtist(artist.artist)}
+                                            startIcon={
+                                                isUnfollowingArtist(artist.artist) ? (
+                                                    <CircularProgress size={14} />
+                                                ) : (
+                                                    <UserRoundMinusIcon size={14} />
+                                                )
+                                            }
+                                        >
+                                            Unfollow
+                                        </Button>
                                     ) : (
                                         <Button
                                             size="small"

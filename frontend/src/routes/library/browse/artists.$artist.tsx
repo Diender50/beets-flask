@@ -195,15 +195,28 @@ function Viewer({
     artist: string;
 } & BoxProps) {
     const theme = useTheme();
+    const queryClient = useQueryClient();
     const [selected, setSelected] = useState<'albums' | 'missing'>('albums');
     const [filter, setFilter] = useState('');
     const [albumTypeFilter, setAlbumTypeFilter] = useState<string | null>(null);
+    const [isRefreshing, setIsRefreshing] = useState(false);
 
     const missingAlbumsQuery = useQuery({
         ...missingAlbumsByArtistQueryOptions(artist),
         enabled: selected === 'missing',
     });
     const missingAlbums = missingAlbumsQuery.data ?? [];
+
+    const handleRefreshMissing = async () => {
+        setIsRefreshing(true);
+        try {
+            const fresh = await fetchMissingAlbumsByArtist(artist, true);
+            queryClient.setQueryData(missingAlbumsByArtistQueryOptions(artist).queryKey, fresh);
+            void queryClient.invalidateQueries({ queryKey: ['artists'] });
+        } finally {
+            setIsRefreshing(false);
+        }
+    };
 
     const albumIds = useMemo(() => new Set(albums.map((a) => a.id)), [albums]);
 
@@ -325,7 +338,8 @@ function Viewer({
                     <Box
                         sx={{
                             display: 'flex',
-                            gap: 2,
+                            gap: 1,
+                            alignItems: 'center',
                         }}
                     >
                         <ToggleButtonGroup
@@ -360,6 +374,19 @@ function Viewer({
                                 )}
                             </ToggleButton>
                         </ToggleButtonGroup>
+                        {selected === 'missing' && (
+                            <Tooltip title="Recompute from MusicBrainz & Deezer (bypass cache)">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => void handleRefreshMissing()}
+                                    disabled={isRefreshing || missingAlbumsQuery.isLoading}
+                                >
+                                    {isRefreshing
+                                        ? <CircularProgress size={16} />
+                                        : <RefreshCw size={16} />}
+                                </IconButton>
+                            </Tooltip>
+                        )}
                     </Box>
                 </Box>
                 {selected === 'albums' && albumTypes.length > 1 && (
@@ -424,7 +451,12 @@ function Viewer({
                             <CircularProgress size={20} />
                         </Box>
                     ) : (
-                        <MissingAlbumsViewer albums={filteredMissingAlbums} artist={artist} />
+                        <MissingAlbumsViewer
+                            albums={filteredMissingAlbums}
+                            artist={artist}
+                            isRefreshing={isRefreshing}
+                            onRefresh={handleRefreshMissing}
+                        />
                     )
                 )}
             </Box>
@@ -805,6 +837,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     const [deemixLoading, setDeemixLoading] = useState(false);
     const [squidwtfLoading, setSquidwtfLoading] = useState(false);
     const [suggestionErrors, setSuggestionErrors] = useState<string[]>([]);
+    const [errorProviders, setErrorProviders] = useState<Set<string>>(new Set());
     const searchAbortRef = useRef<AbortController[] | null>(null);
 
     const cleanupSlskdSearchesForDialog = () => {
@@ -850,6 +883,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
 
         setSuggestionChoices([]);
         setSuggestionErrors([]);
+        setErrorProviders(new Set());
         setSlskdLoading(true);
         setDeemixLoading(true);
         setSquidwtfLoading(true);
@@ -893,6 +927,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                         ...prev,
                         `${provider}: ${(err as Error)?.message ?? 'request failed'}`,
                     ]);
+                    setErrorProviders((prev: Set<string>) => new Set([...prev, provider]));
                 }
             } finally {
                 if (!cancelled) setLoading(false);
@@ -1058,21 +1093,41 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
             <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="md">
                 <DialogTitle>Choose download result</DialogTitle>
                 <DialogContent dividers>
+                    <Box sx={{ display: 'flex', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+                        {(
+                            [
+                                { key: 'slskd', loading: slskdLoading },
+                                { key: 'deemix', loading: deemixLoading },
+                                { key: 'squidwtf', loading: squidwtfLoading },
+                            ] as const
+                        ).map(({ key, loading }) => {
+                            const hasError = errorProviders.has(key);
+                            return (
+                                <Chip
+                                    key={key}
+                                    label={key}
+                                    size="small"
+                                    variant={loading ? 'outlined' : 'filled'}
+                                    color={loading ? 'default' : hasError ? 'error' : 'success'}
+                                    icon={
+                                        loading ? (
+                                            <CircularProgress size={12} sx={{ ml: '6px !important' }} />
+                                        ) : hasError ? (
+                                            <XCircleIcon size={12} />
+                                        ) : (
+                                            <CheckIcon size={12} />
+                                        )
+                                    }
+                                />
+                            );
+                        })}
+                    </Box>
                     {suggestionLoading && suggestionChoices.length === 0 ? (
                         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
                             <CircularProgress size={24} />
                         </Box>
                     ) : suggestionChoices.length > 0 ? (
                         <>
-                            {(deemixLoading || slskdLoading || squidwtfLoading) && (
-                                <Alert severity="info" variant="outlined" sx={{ mb: 1 }}>
-                                    Searching {[
-                                        slskdLoading ? 'slskd' : null,
-                                        deemixLoading ? 'deemix' : null,
-                                        squidwtfLoading ? 'squidwtf' : null,
-                                    ].filter(Boolean).join(', ')}...
-                                </Alert>
-                            )}
                         <MuiList disablePadding>
                             {suggestionChoices.map((choice, index) => (
                                 (() => {
@@ -1207,15 +1262,25 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     );
 }
 
-function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artist: string }) {
+function MissingAlbumsViewer({
+    albums,
+    artist,
+    isRefreshing,
+    onRefresh,
+}: {
+    albums: MissingAlbum[];
+    artist: string;
+    isRefreshing: boolean;
+    onRefresh: () => Promise<void>;
+}) {
     const [expandedId, setExpandedId] = useState<string | null>(null);
-    const queryClient = useQueryClient();
-    const [refreshing, setRefreshing] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf'>>(
-        new Set(['deemix'])
+        new Set(['deemix', 'slskd', 'squidwtf'])
     );
-    const [batchQualities, setBatchQualities] = useState<Set<DownloadQuality>>(new Set(['flac']));
+    const [batchQualities, setBatchQualities] = useState<Set<DownloadQuality>>(
+        new Set(['flac', '320', '128'])
+    );
 
     const albumEntries = useMemo(() => {
         return albums.map((album, idx) => ({
@@ -1272,26 +1337,6 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
         },
     });
 
-    const handleRefresh = async () => {
-        console.log('[missing_albums] refresh click', { artist });
-        setRefreshing(true);
-        try {
-            const fresh = await fetchMissingAlbumsByArtist(artist, true);
-            queryClient.setQueryData(
-                missingAlbumsByArtistQueryOptions(artist).queryKey,
-                fresh
-            );
-            console.log('[missing_albums] refresh done', {
-                artist,
-                count: fresh.length,
-            });
-        } catch (error) {
-            console.error('[missing_albums] refresh failed', { artist, error });
-        } finally {
-            setRefreshing(false);
-        }
-    };
-
     if (albums.length === 0) {
         return (
             <Box
@@ -1307,9 +1352,9 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                 <Typography variant="body1" color="text.secondary">
                     No missing albums found.
                 </Typography>
-                <Tooltip title="Refresh missing albums">
-                    <IconButton size="small" onClick={() => void handleRefresh()} disabled={refreshing}>
-                        {refreshing ? <CircularProgress size={16} /> : <RefreshCw size={16} />}
+                <Tooltip title="Recompute from MusicBrainz & Deezer (bypass cache)">
+                    <IconButton size="small" onClick={() => void onRefresh()} disabled={isRefreshing}>
+                        {isRefreshing ? <CircularProgress size={16} /> : <RefreshCw size={16} />}
                     </IconButton>
                 </Tooltip>
             </Box>
@@ -1399,6 +1444,9 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                         <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
                             Providers
                         </Typography>
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', opacity: 0.8 }}>
+                            Manual downloads are not affected by providers selection
+                        </Typography>
                         <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
                         {(['deemix', 'slskd', 'squidwtf'] as const).map((provider) => (
                             <FormControlLabel
@@ -1429,6 +1477,9 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                     <FormControl component="fieldset" size="small">
                         <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
                             Qualities
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', opacity: 0.8 }}>
+                                The best quality will be selected for each album based on availability
                         </Typography>
                         <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
                         {(['flac', '320', '128'] as const).map((quality) => (
@@ -1540,14 +1591,21 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                 const album = entry.album;
                                 const isExpanded = expandedId === rowId;
                                 const isSelected = selectedIds.has(rowId);
-                                const deezerId = album.mb_releasegroupid?.startsWith('deezer:')
-                                    ? album.mb_releasegroupid.slice(7)
-                                    : null;
-                                const deezerUrl = deezerId
-                                    ? `https://www.deezer.com/album/${deezerId}`
-                                    : album.mb_releasegroupid
-                                      ? `https://musicbrainz.org/release-group/${album.mb_releasegroupid}`
+                                const isMbEntry = Boolean(
+                                    album.mb_releasegroupid &&
+                                    !album.mb_releasegroupid.startsWith('deezer:')
+                                );
+                                const deezerIdStr = album.deezer_id
+                                    ? String(album.deezer_id)
+                                    : album.mb_releasegroupid?.startsWith('deezer:')
+                                      ? album.mb_releasegroupid.slice(7)
                                       : null;
+                                const mbUrl = isMbEntry
+                                    ? `https://musicbrainz.org/release-group/${album.mb_releasegroupid}`
+                                    : null;
+                                const deezerUrl = deezerIdStr
+                                    ? `https://www.deezer.com/album/${deezerIdStr}`
+                                    : null;
                                 return (
                                     <>
                                         <TableRow
@@ -1624,26 +1682,35 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                                 <MissingAlbumTrackCount album={album} />
                                             </TableCell>
                                             <TableCell sx={{ width: 72 }}>{album.year ?? '-'}</TableCell>
-                                            <TableCell sx={{ p: 0.5, width: 52 }} onClick={(e) => e.stopPropagation()}>
-                                                {deezerUrl && (
-                                                    <Tooltip
-                                                        title={
-                                                            deezerId
-                                                                ? 'Open on Deezer'
-                                                                : 'Open on MusicBrainz'
-                                                        }
-                                                    >
-                                                        <IconButton
-                                                            size="small"
-                                                            component="a"
-                                                            href={deezerUrl}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                        >
-                                                            <ExternalLinkIcon size={16} />
-                                                        </IconButton>
-                                                    </Tooltip>
-                                                )}
+                                            <TableCell sx={{ p: 0.5, width: mbUrl && deezerUrl ? 88 : 52 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
+                                                <Box sx={{ display: 'flex' }}>
+                                                    {mbUrl && (
+                                                        <Tooltip title="Open on MusicBrainz">
+                                                            <IconButton
+                                                                size="small"
+                                                                component="a"
+                                                                href={mbUrl}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                            >
+                                                                <ExternalLinkIcon size={16} />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    )}
+                                                    {deezerUrl && (
+                                                        <Tooltip title="Open on Deezer">
+                                                            <IconButton
+                                                                size="small"
+                                                                component="a"
+                                                                href={deezerUrl}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                            >
+                                                                <ExternalLinkIcon size={16} />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    )}
+                                                </Box>
                                             </TableCell>
                                             <TableCell sx={{ p: 0.5, width: 104, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                                                 <DownloadButton album={album} artist={artist} />

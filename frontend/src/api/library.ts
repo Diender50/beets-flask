@@ -270,7 +270,10 @@ export interface Artist {
 export interface MissingAlbum {
     album: string;
     year?: number;
+    /** Real MB UUID, or "deezer:<id>" for Deezer-only entries. */
     mb_releasegroupid?: string;
+    /** Deezer album ID when Deezer data is available (set on both MB+Deezer merged and Deezer-only entries). */
+    deezer_id?: number | string | null;
     release_type?: string;
     cover_url?: string;
     track_count?: number;

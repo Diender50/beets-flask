@@ -22,7 +22,7 @@ import {
     Typography,
     useTheme,
 } from '@mui/material';
-import { UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon } from 'lucide-react';
+import { UserRoundMinusIcon, UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 
@@ -77,7 +77,7 @@ function RouteComponent() {
                 artist: f.name,
                 album_count: 0,
                 item_count: 0,
-                missing_count: 0,
+                missing_count: f.missing_count ?? 0,
                 total_size: 0,
                 followed: true,
             }));
@@ -178,7 +178,7 @@ function ArtistsListWrapper({
     ...props
 }: { artists: Array<Artist>; albumArtistOnly: boolean; onAlbumArtistOnlyChange: (v: boolean) => void } & BoxProps) {
     const [filter, setFilter] = useState<string>('');
-    const [selectedToFollow, setSelectedToFollow] = useState<Set<string>>(new Set());
+    const [selected, setSelected] = useState<Set<string>>(new Set());
     const queryClient = useQueryClient();
 
     const followMutation = useMutation({
@@ -194,37 +194,59 @@ function ArtistsListWrapper({
         },
         onSuccess: () => {
             void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
-            setSelectedToFollow(new Set());
+        },
+    });
+
+    const unfollowMutation = useMutation({
+        mutationFn: (name: string) => unfollowArtist(name),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+    });
+
+    const bulkUnfollowMutation = useMutation({
+        mutationFn: async (names: string[]) => {
+            await Promise.all(names.map((name) => unfollowArtist(name)));
+        },
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
         },
     });
 
     const filteredData = useMemo(() => {
-        if (!filter) {
-            return artists;
-        }
-        return artists.filter((item) => {
-            return item.artist?.toLowerCase().includes(filter.toLowerCase());
-        });
+        if (!filter) return artists;
+        return artists.filter((item) =>
+            item.artist?.toLowerCase().includes(filter.toLowerCase())
+        );
     }, [artists, filter]);
 
     const nRemovedByFilter = artists.length - filteredData.length;
 
+    // Remove selected artists that scrolled out of the visible set.
     useEffect(() => {
-        const visibleUnfollowed = new Set(
-            filteredData
-                .filter((artist) => !artist.followed)
-                .map((artist) => artist.artist)
-        );
-        setSelectedToFollow((prev) => {
-            const next = new Set(
-                [...prev].filter((name) => visibleUnfollowed.has(name))
-            );
-            return next;
+        const visible = new Set(filteredData.map((a: Artist) => a.artist));
+        setSelected((prev: Set<string>) => {
+            const next = new Set([...prev].filter((name) => visible.has(name)));
+            return next.size === prev.size ? prev : next;
         });
     }, [filteredData]);
 
+    const followedNames = useMemo(
+        () => new Set(filteredData.filter((a: Artist) => a.followed).map((a: Artist) => a.artist)),
+        [filteredData]
+    );
+
+    const selectedToFollow = useMemo(
+        () => [...selected].filter((name) => !followedNames.has(name)),
+        [selected, followedNames]
+    );
+    const selectedToUnfollow = useMemo(
+        () => [...selected].filter((name) => followedNames.has(name)),
+        [selected, followedNames]
+    );
+
     const handleToggleSelection = (artistName: string, checked: boolean) => {
-        setSelectedToFollow((prev) => {
+        setSelected((prev: Set<string>) => {
             const next = new Set(prev);
             if (checked) next.add(artistName);
             else next.delete(artistName);
@@ -233,7 +255,7 @@ function ArtistsListWrapper({
     };
 
     const handleToggleSelectAll = (checked: boolean, artistNames: string[]) => {
-        setSelectedToFollow((prev) => {
+        setSelected((prev: Set<string>) => {
             const next = new Set(prev);
             if (checked) {
                 for (const name of artistNames) next.add(name);
@@ -245,20 +267,21 @@ function ArtistsListWrapper({
     };
 
     const handleFollowOne = (artistName: string) => {
-        followMutation.mutate(artistName, {
-            onSuccess: () => {
-                setSelectedToFollow((prev) => {
-                    const next = new Set(prev);
-                    next.delete(artistName);
-                    return next;
-                });
-            },
-        });
+        followMutation.mutate(artistName);
     };
 
     const handleFollowSelected = () => {
-        if (selectedToFollow.size === 0) return;
-        bulkFollowMutation.mutate([...selectedToFollow]);
+        if (selectedToFollow.length === 0) return;
+        bulkFollowMutation.mutate(selectedToFollow);
+    };
+
+    const handleUnfollowOne = (artistName: string) => {
+        unfollowMutation.mutate(artistName);
+    };
+
+    const handleUnfollowSelected = () => {
+        if (selectedToUnfollow.length === 0) return;
+        bulkUnfollowMutation.mutate(selectedToUnfollow);
     };
 
     return (
@@ -307,7 +330,7 @@ function ArtistsListWrapper({
                     variant="outlined"
                     onClick={handleFollowSelected}
                     disabled={
-                        selectedToFollow.size === 0 ||
+                        selectedToFollow.length === 0 ||
                         followMutation.isPending ||
                         bulkFollowMutation.isPending
                     }
@@ -319,7 +342,27 @@ function ArtistsListWrapper({
                         )
                     }
                 >
-                    Follow Selected ({selectedToFollow.size})
+                    Follow Selected ({selectedToFollow.length})
+                </Button>
+                <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    onClick={handleUnfollowSelected}
+                    disabled={
+                        selectedToUnfollow.length === 0 ||
+                        unfollowMutation.isPending ||
+                        bulkUnfollowMutation.isPending
+                    }
+                    startIcon={
+                        bulkUnfollowMutation.isPending ? (
+                            <CircularProgress size={14} />
+                        ) : (
+                            <UserRoundMinusIcon size={14} />
+                        )
+                    }
+                >
+                    Unfollow Selected ({selectedToUnfollow.length})
                 </Button>
                 <Typography
                     variant="caption"
@@ -341,7 +384,7 @@ function ArtistsListWrapper({
             >
                 <ArtistsTable
                     artists={filteredData}
-                    selectedToFollow={selectedToFollow}
+                    selected={selected}
                     onToggleSelection={handleToggleSelection}
                     onToggleSelectAll={handleToggleSelectAll}
                     onFollowArtist={handleFollowOne}
@@ -349,7 +392,12 @@ function ArtistsListWrapper({
                         followMutation.isPending &&
                         followMutation.variables === artistName
                     }
-                    disableActions={bulkFollowMutation.isPending}
+                    onUnfollowArtist={handleUnfollowOne}
+                    isUnfollowingArtist={(artistName) =>
+                        unfollowMutation.isPending &&
+                        unfollowMutation.variables === artistName
+                    }
+                    disableActions={bulkFollowMutation.isPending || bulkUnfollowMutation.isPending}
                 />
             </Box>
         </Box>

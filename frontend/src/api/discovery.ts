@@ -5,6 +5,7 @@ import { queryOptions } from '@tanstack/react-query';
 export interface FollowedArtist {
     name: string;
     added_at: string;
+    missing_count?: number;
 }
 
 export const followedArtistsQueryOptions = () =>

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\roudn\\\\Sync-in\\\\06_DEV\\\\202605_beets-flask\\\\beets-flask\")",
+      "Bash(Select-Object Name, PSIsContainer)"
+    ]
+  }
+}
