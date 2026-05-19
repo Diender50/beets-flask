@@ -55,30 +55,69 @@ async def handle_root_options():
 def _all_inbox_paths() -> dict[str, str]:
     try:
         config = get_config()
-        folders = config["gui"]["inbox"]["folders"].get({})
+        folders_view = config["gui"]["inbox"]["folders"]
     except Exception as exc:
         log.warning("Could not read inbox folders from config: %s", exc)
         return {}
 
     result: dict[str, str] = {}
-    if not isinstance(folders, dict):
-        return result
+    try:
+        # Prefer flattened mapping because it is stable across confuse config layers.
+        flat_values = folders_view.flatten().values()  # type: ignore[attr-defined]
+        for folder_cfg in flat_values:
+            if not isinstance(folder_cfg, dict):
+                continue
+            path = str(folder_cfg.get("path") or "").strip()
+            if not path:
+                continue
 
-    for folder_key, folder_cfg in folders.items():
-        if not isinstance(folder_cfg, dict):
-            continue
-        path = str(folder_cfg.get("path") or "").strip()
-        if not path:
-            continue
+            key = str(folder_cfg.get("__key__") or "").strip()
+            if key:
+                result[key] = path
 
-        result[str(folder_key)] = path
+            name = str(folder_cfg.get("name") or "").strip()
+            if name:
+                result[name] = path
 
-        name = str(folder_cfg.get("name") or "").strip()
-        if name:
-            result[name] = path
+            # Allow selecting direct path as selector value.
+            result[path] = path
+    except Exception:
+        try:
+            folders = folders_view.get({})
+        except Exception:
+            folders = {}
 
-        # Allow selecting direct path as selector value.
-        result[path] = path
+        if not isinstance(folders, dict):
+            return result
+
+        for folder_key, folder_cfg in folders.items():
+            if not isinstance(folder_cfg, dict):
+                continue
+            path = str(folder_cfg.get("path") or "").strip()
+            if not path:
+                continue
+
+            result[str(folder_key)] = path
+
+            name = str(folder_cfg.get("name") or "").strip()
+            if name:
+                result[name] = path
+
+            # Allow selecting direct path as selector value.
+            result[path] = path
+
+    # Also include real config keys (Inbox1/Soulseek/etc.) when available.
+    try:
+        for k in folders_view.keys():
+            key = str(k)
+            try:
+                path = str(folders_view[key]["path"].as_str()).strip()
+            except Exception:
+                path = ""
+            if path:
+                result[key] = path
+    except Exception:
+        pass
     return result
 
 
@@ -91,10 +130,18 @@ def _provider_download_path(provider: str) -> str:
         return inbox_paths[selector]
 
     if selector:
+        # Case-insensitive fallback matching for key/name/path.
+        selector_cf = selector.casefold()
+        for key, path in inbox_paths.items():
+            if str(key).casefold() == selector_cf:
+                return path
+
+    if selector:
         log.warning(
-            "Configured discovery.%s.inbox_folder=%s not found; using fallback inbox path",
+            "Configured discovery.%s.inbox_folder=%s not found; using fallback inbox path (known=%s)",
             provider,
             selector,
+            ",".join(sorted(set(inbox_paths.keys()))),
         )
 
     # Fallback: first configured inbox path.
