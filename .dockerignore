@@ -7,6 +7,24 @@
 
 *
 
+# Explicitly exclude transient folders first so Docker sender does not try to
+# read locked files on Windows while traversing directories.
+frontend/node_modules
+frontend/node_modules/**
+frontend/.pnpm-store
+frontend/.pnpm-store/**
+frontend/dist
+frontend/dist/**
+backend/.venv
+backend/.venv/**
+backend/.pytest_cache
+backend/.pytest_cache/**
+backend/.mypy_cache
+backend/.mypy_cache/**
+
+# Ignore all frontend children by default, then include only build inputs.
+frontend/*
+
 !backend/beets_flask
 !backend/pyproject.toml
 !backend/main.py
@@ -17,12 +35,13 @@
 
 !frontend/src/
 !frontend/public/
-!frontend/dist/
 
 !frontend/.eslintrc.js
+!frontend/eslint.config.js
 !frontend/index.html
 !frontend/package.json
 !frontend/pnpm-lock.yaml
+!frontend/prettier.config.js
 !frontend/postcss.config.js
 !frontend/tailwind.config.js
 !frontend/tsconfig.json

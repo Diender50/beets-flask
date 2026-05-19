@@ -36,9 +36,16 @@ services:
 
             # for development. (disable if target is `prod`)
             - ../:/repo/
+            # keep frontend dependencies off host FS to avoid Windows lock/sync issues
+            - frontend_node_modules:/repo/frontend/node_modules
+            - frontend_pnpm_store:/repo/frontend/.pnpm-store
         networks:
             - beetsflask
 
 networks:
     beetsflask:
         name: beetsflask
+
+volumes:
+    frontend_node_modules:
+    frontend_pnpm_store:

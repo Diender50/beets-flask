@@ -16,6 +16,10 @@ if [ ! -z "$USER_ID" ] && [ ! -z "$GROUP_ID" ]; then
     log "User beetle now has $(id beetle)"
     find /home/beetle ! -user beetle -exec chown beetle:beetle {} +
     find /logs ! -user beetle -exec chown beetle:beetle {} +
+    # Keep frontend dependency volumes writable in dev mode.
+    mkdir -p /repo/frontend/node_modules /repo/frontend/.pnpm-store
+    find /repo/frontend/node_modules ! -user beetle -exec chown beetle:beetle {} +
+    find /repo/frontend/.pnpm-store ! -user beetle -exec chown beetle:beetle {} +
     if [ "$BEETSFLASK_SKIP_REPO_CHOWN" = "1" ]; then
         log "Skipping /repo ownership fix (BEETSFLASK_SKIP_REPO_CHOWN=1)"
     else
