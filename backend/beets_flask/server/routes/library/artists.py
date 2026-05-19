@@ -280,6 +280,24 @@ def _normalize_for_dedup(title: str) -> str:
     return re.sub(r"[\s\-_:]+$", "", t).strip()
 
 
+def _is_prefix_single_of_owned_title(
+    candidate_title_dedup: str,
+    owned_titles_dedup: set[str],
+) -> bool:
+    """Heuristic: Deezer single title is strict prefix of an owned album title.
+
+    Example: single "ten" while owned album "ten days".
+    """
+    t = candidate_title_dedup.strip()
+    if not t or " " in t:
+        return False
+
+    for owned in owned_titles_dedup:
+        if owned.startswith(f"{t} "):
+            return True
+    return False
+
+
 def _owned_album_titles_normalized(artist_name: str, lib=None) -> set[str]:
     normalized_artist_name = _normalize_artist_name(artist_name)
     titles: set[str] = set()
@@ -609,6 +627,13 @@ def _missing_albums_from_deezer(
             if dedup_key in owned_titles_dedup or dedup_key in mb_titles_dedup:
                 continue
 
+            record_type = str(album.get("record_type", "album"))
+            if record_type.casefold() == "single" and _is_prefix_single_of_owned_title(
+                dedup_key,
+                owned_titles_dedup,
+            ):
+                continue
+
             year_str = str(album.get("release_date", "") or "")
             year: int | None = int(year_str[:4]) if len(year_str) >= 4 else None
             deezer_id = album.get("id")
@@ -628,7 +653,7 @@ def _missing_albums_from_deezer(
                 "album": title,
                 "year": year,
                 "mb_releasegroupid": f"deezer:{deezer_id}" if deezer_id else None,
-                "release_type": str(album.get("record_type", "album")),
+                "release_type": record_type,
                 "cover_url": album.get("cover_medium") or album.get("cover") or None,
                 "track_count": track_count,
             })
@@ -668,6 +693,37 @@ def recompute_missing_cache_for_artist(artist_name: str, lib=None) -> list[dict[
     set_json_cache(cache_key, payload, MISSING_CACHE_TTL_SECONDS)
     set_db_missing_cache(artist_name, payload)
     return missing
+
+
+def _clean_cached_missing_payload(
+    artist_name: str,
+    payload: str,
+    lib=None,
+) -> tuple[str, bool]:
+    """Drop stale cached missing albums that are now owned in library."""
+    try:
+        rows = json.loads(payload or "[]")
+    except Exception:
+        return payload, False
+
+    if not isinstance(rows, list):
+        return payload, False
+
+    owned_titles = _owned_album_titles_normalized(artist_name, lib=lib)
+    if not owned_titles:
+        return payload, False
+
+    cleaned = [
+        row
+        for row in rows
+        if _normalize_for_dedup(str((row or {}).get("album", ""))) not in owned_titles
+    ]
+    changed = len(cleaned) != len(rows)
+    if not changed:
+        return payload, False
+
+    cleaned_payload = pd.DataFrame(cleaned).to_json(orient="records")
+    return cleaned_payload, True
 
 
 def _all_library_artist_names(lib=None) -> list[str]:
@@ -734,6 +790,37 @@ def ensure_missing_cache_warmed_for_all_artists(
         "artists_warmed": warmed,
         "artists_failed": failed,
     }
+
+
+def _missing_count_by_artist_name() -> dict[str, int]:
+    """Return cached missing-albums count per artist from persistent DB cache."""
+    try:
+        from beets_flask.database.models.states import MissingAlbumCacheInDb
+        from beets_flask.database.setup import session_factory
+
+        session = session_factory()
+        try:
+            rows = session.query(
+                MissingAlbumCacheInDb.artist_name,
+                MissingAlbumCacheInDb.albums_json,
+            ).all()
+        finally:
+            session.close()
+    except Exception as exc:
+        log.warning("Could not load missing-count map: %s", exc)
+        return {}
+
+    counts: dict[str, int] = {}
+    for artist_name, albums_json in rows:
+        try:
+            parsed = json.loads(albums_json or "[]")
+            count = len(parsed) if isinstance(parsed, list) else 0
+        except Exception:
+            count = 0
+        key = str(artist_name).strip()
+        if key:
+            counts[key] = count
+    return counts
 
 
 def get_artists_pandas(
@@ -898,6 +985,9 @@ async def all_artists(artist_name: str | None = None):
     artists["item_count"] = artists["item_count"].fillna(0).astype(int)
     artists["total_size"] = artists["total_size"].fillna(0).astype(int)
 
+    missing_count_map = _missing_count_by_artist_name()
+    artists["missing_count"] = artists["artist"].map(missing_count_map).fillna(0).astype(int)
+
     if artist_name is not None:
         if artists.empty:
             # Return a stub for followed-only artists (not yet in beets library)
@@ -911,6 +1001,7 @@ async def all_artists(artist_name: str | None = None):
                     "album_count": 0,
                     "item_count": 0,
                     "total_size": 0,
+                    "missing_count": 0,
                     "followed": True,
                 }
                 return Response(_json.dumps(stub), mimetype="application/json")
@@ -949,6 +1040,10 @@ async def missing_albums_by_artist(artist_name: str):
         # 1. Redis
         cached = get_json_cache(cache_key)
         if cached is not None:
+            cached, changed = _clean_cached_missing_payload(artist_name, cached)
+            if changed:
+                set_json_cache(cache_key, cached, MISSING_CACHE_TTL_SECONDS)
+                set_db_missing_cache(artist_name, cached)
             log.info("missing_albums redis_hit artist=%s", artist_name)
             return Response(cached, mimetype="application/json")
         log.info("missing_albums redis_miss artist=%s", artist_name)
@@ -956,9 +1051,12 @@ async def missing_albums_by_artist(artist_name: str):
         # 2. DB (persistent across reboots)
         db_cached = get_db_missing_cache(artist_name)
         if db_cached is not None:
+            db_cached, changed = _clean_cached_missing_payload(artist_name, db_cached)
             log.info("missing_albums db_hit artist=%s", artist_name)
             # Restore Redis so subsequent requests are fast
             set_json_cache(cache_key, db_cached, MISSING_CACHE_TTL_SECONDS)
+            if changed:
+                set_db_missing_cache(artist_name, db_cached)
             return Response(db_cached, mimetype="application/json")
         log.info("missing_albums db_miss artist=%s", artist_name)
     else:

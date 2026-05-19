@@ -77,6 +77,7 @@ function RouteComponent() {
                 artist: f.name,
                 album_count: 0,
                 item_count: 0,
+                missing_count: 0,
                 total_size: 0,
                 followed: true,
             }));

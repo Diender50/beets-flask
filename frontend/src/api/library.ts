@@ -258,6 +258,7 @@ export interface Artist {
     album_count: number;
     item_count: number;
     total_size: number;
+    missing_count: number;
     last_item_added?: Date;
     last_album_added?: Date;
     first_item_added?: Date;

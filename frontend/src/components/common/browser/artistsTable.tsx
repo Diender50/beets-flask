@@ -30,7 +30,7 @@ export interface ArtistsTableProps {
     disableActions?: boolean;
 }
 
-type SortField = 'artist' | 'album_count' | 'item_count' | 'total_size';
+type SortField = 'artist' | 'album_count' | 'item_count' | 'missing_count' | 'total_size';
 type SortOrder = 'asc' | 'desc';
 
 export function ArtistsTable({
@@ -60,6 +60,9 @@ export function ArtistsTable({
             } else if (sortField === 'item_count') {
                 aVal = a.item_count;
                 bVal = b.item_count;
+            } else if (sortField === 'missing_count') {
+                aVal = a.missing_count ?? 0;
+                bVal = b.missing_count ?? 0;
             } else if (sortField === 'total_size') {
                 aVal = a.total_size;
                 bVal = b.total_size;
@@ -158,6 +161,15 @@ export function ArtistsTable({
                         </TableCell>
                         <TableCell align="right">
                             <TableSortLabel
+                                active={sortField === 'missing_count'}
+                                direction={sortField === 'missing_count' ? sortOrder : 'asc'}
+                                onClick={() => handleSort('missing_count')}
+                            >
+                                Missing
+                            </TableSortLabel>
+                        </TableCell>
+                        <TableCell align="right">
+                            <TableSortLabel
                                 active={sortField === 'total_size'}
                                 direction={sortField === 'total_size' ? sortOrder : 'asc'}
                                 onClick={() => handleSort('total_size')}
@@ -184,7 +196,7 @@ export function ArtistsTable({
                 <TableBody>
                     {sorted.length === 0 ? (
                         <TableRow>
-                            <TableCell colSpan={6} align="center">
+                            <TableCell colSpan={7} align="center">
                                 <Typography color="textSecondary">
                                     No artists found
                                 </Typography>
@@ -244,6 +256,7 @@ export function ArtistsTable({
                                 </TableCell>
                                 <TableCell align="right">{artist.album_count}</TableCell>
                                 <TableCell align="right">{artist.item_count}</TableCell>
+                                <TableCell align="right">{artist.missing_count ?? 0}</TableCell>
                                 <TableCell align="right">{formatBytes(artist.total_size)}</TableCell>
                                 <TableCell
                                     align="center"
