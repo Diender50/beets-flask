@@ -690,6 +690,11 @@ class ImportSession(BaseSession):
             candidate_ids, CandidateChoiceFallback.BEST
         )
 
+        # Collects raw albumartist strings for each successfully imported task so
+        # that the missing-albums cache can be invalidated per-artist after the
+        # session completes (see enqueue.py → _invalidate_missing_cache_for_session).
+        self._imported_artists: set[str] = set()
+
     async def run_async(self) -> SessionState:
         # only allow import sessions to run on preview states (not other import states)
         if self.state.progress == Progress.IMPORT_COMPLETED:
@@ -781,6 +786,21 @@ class ImportSession(BaseSession):
                 "Clearing previous MatchThresholdException after successful import."
             )
             self.state.exc = None
+
+        # Collect the albumartist of each successfully imported task so that only
+        # the affected artists' missing-albums caches are invalidated afterwards.
+        if not task.skip:
+            try:
+                for item in task.items or []:
+                    artist_str = (
+                        str(getattr(item, "albumartist", None) or "").strip()
+                        or str(getattr(item, "artist", None) or "").strip()
+                    )
+                    if artist_str:
+                        self._imported_artists.add(artist_str)
+            except Exception as exc:
+                log.debug(f"Failed to collect imported artists in finalize: {exc}")
+
         super().finalize(task)
 
     # --------------------------- Stage Definitions -------------------------- #

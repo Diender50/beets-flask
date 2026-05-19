@@ -62,6 +62,7 @@ export async function searchArtists(q: string): Promise<ArtistSearchResult[]> {
 /* ──────────────────── Download (Phase 3) ───────────────────────── */
 
 export type DownloadStatus = 'pending' | 'downloading' | 'done' | 'error';
+export type DownloadQuality = 'flac' | '320' | '128';
 
 export interface DownloadJob {
     job_id: string;
@@ -145,6 +146,7 @@ export async function startDownload(opts: {
     album: string;
     artist: string;
     provider?: 'deemix' | 'slskd' | 'squidwtf';
+    quality?: DownloadQuality;
     deezer_id?: string;
     squid_album_id?: string;
     candidate?: Record<string, unknown>;
@@ -160,6 +162,39 @@ export async function startDownload(opts: {
         throw new Error(`Download failed (${response.status}): ${text}`);
     }
     return response.json();
+}
+
+export async function startBatchDownload(opts: {
+    provider: 'deemix' | 'slskd' | 'squidwtf';
+    quality: DownloadQuality;
+    albums: Array<{
+        album: string;
+        artist: string;
+        release_id?: string;
+        deezer_id?: string;
+        squid_album_id?: string;
+    }>;
+}): Promise<{
+    provider: string;
+    quality: DownloadQuality;
+    requested: number;
+    queued: number;
+    failed: number;
+    jobs: DownloadJob[];
+    errors: Array<{ index: number; artist: string; album: string; error: string; status: number }>;
+}> {
+    const response = await fetch('/discovery/download/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+        const message = typeof payload?.error === 'string' ? payload.error : 'Batch download failed';
+        throw new Error(message);
+    }
+    return payload;
 }
 
 export async function getDownloadJob(jobId: string): Promise<DownloadJob> {

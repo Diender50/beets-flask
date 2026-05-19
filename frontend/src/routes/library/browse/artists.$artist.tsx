@@ -11,12 +11,17 @@ import {
     Chip,
     Alert,
     CircularProgress,
+    Checkbox,
     Collapse,
     Divider,
+    FormControl,
     IconButton,
+    InputLabel,
     List as MuiList,
     ListItemButton,
     ListItemText,
+    MenuItem,
+    Select,
     Table,
     TableBody,
     TableCell,
@@ -46,9 +51,11 @@ import {
 } from '@/api/library';
 import {
     cleanupSlskdSearches,
+    DownloadQuality,
     DownloadSuggestion,
     getDownloadJob,
     getDownloadSuggestions,
+    startBatchDownload,
     startDownload,
 } from '@/api/discovery';
 import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
@@ -1196,6 +1203,64 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const queryClient = useQueryClient();
     const [refreshing, setRefreshing] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [batchProvider, setBatchProvider] = useState<'deemix' | 'slskd' | 'squidwtf'>('deemix');
+    const [batchQuality, setBatchQuality] = useState<DownloadQuality>('flac');
+
+    const albumEntries = useMemo(() => {
+        return albums.map((album, idx) => ({
+            id: album.mb_releasegroupid || `${album.album}-${album.year ?? 'na'}-${idx}`,
+            album,
+        }));
+    }, [albums]);
+
+    const grouped = useMemo(() => {
+        const map = new Map<string, Array<{ id: string; album: MissingAlbum }>>();
+        for (const entry of albumEntries) {
+            const type = entry.album.release_type ?? 'album';
+            if (!map.has(type)) map.set(type, []);
+            map.get(type)!.push(entry);
+        }
+        return map;
+    }, [albumEntries]);
+
+    const selectedEntries = useMemo(
+        () => albumEntries.filter((entry) => selectedIds.has(entry.id)),
+        [albumEntries, selectedIds]
+    );
+
+    const allSelected = selectedIds.size > 0 && selectedIds.size === albumEntries.length;
+
+    const batchMutation = useMutation({
+        mutationFn: async () => {
+            const payload = selectedEntries.map((entry) => {
+                const releaseId = entry.album.mb_releasegroupid;
+                const deezerId = releaseId?.startsWith('deezer:')
+                    ? releaseId.slice(7)
+                    : undefined;
+                const squidAlbumId = releaseId?.startsWith('squid:')
+                    ? releaseId.slice(6)
+                    : undefined;
+
+                return {
+                    album: entry.album.album,
+                    artist,
+                    release_id: !deezerId ? (releaseId ?? undefined) : undefined,
+                    deezer_id: deezerId,
+                    squid_album_id: squidAlbumId,
+                };
+            });
+
+            return startBatchDownload({
+                provider: batchProvider,
+                quality: batchQuality,
+                albums: payload,
+            });
+        },
+        onSuccess: () => {
+            setSelectedIds(new Set());
+        },
+    });
 
     const handleRefresh = async () => {
         console.log('[missing_albums] refresh click', { artist });
@@ -1241,23 +1306,83 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
         );
     }
 
-    const grouped = useMemo(() => {
-        const map = new Map<string, MissingAlbum[]>();
-        for (const album of albums) {
-            const type = album.release_type ?? 'album';
-            if (!map.has(type)) map.set(type, []);
-            map.get(type)!.push(album);
-        }
-        return map;
-    }, [albums]);
-
     const orderedTypes = [
         ...RELEASE_TYPE_ORDER.filter((t) => grouped.has(t)),
         ...[...grouped.keys()].filter((t) => !RELEASE_TYPE_ORDER.includes(t)),
     ];
 
+    const toggleAll = () => {
+        if (allSelected) {
+            setSelectedIds(new Set());
+            return;
+        }
+        setSelectedIds(new Set(albumEntries.map((entry) => entry.id)));
+    };
+
     return (
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <Box
+                sx={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    alignItems: 'center',
+                    px: 1,
+                    py: 1,
+                    mb: 1,
+                    border: 1,
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                }}
+            >
+                <Button
+                    variant="contained"
+                    size="small"
+                    disabled={selectedIds.size === 0 || batchMutation.isPending}
+                    onClick={() => batchMutation.mutate()}
+                >
+                    {batchMutation.isPending
+                        ? 'Scheduling...'
+                        : `Batch download (${selectedIds.size})`}
+                </Button>
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                    <InputLabel id="batch-provider-label">Provider</InputLabel>
+                    <Select
+                        labelId="batch-provider-label"
+                        label="Provider"
+                        value={batchProvider}
+                        onChange={(e) => setBatchProvider(e.target.value as 'deemix' | 'slskd' | 'squidwtf')}
+                    >
+                        <MenuItem value="deemix">deemix</MenuItem>
+                        <MenuItem value="slskd">slskd</MenuItem>
+                        <MenuItem value="squidwtf">squidwtf</MenuItem>
+                    </Select>
+                </FormControl>
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                    <InputLabel id="batch-quality-label">Quality</InputLabel>
+                    <Select
+                        labelId="batch-quality-label"
+                        label="Quality"
+                        value={batchQuality}
+                        onChange={(e) => setBatchQuality(e.target.value as DownloadQuality)}
+                    >
+                        <MenuItem value="flac">FLAC</MenuItem>
+                        <MenuItem value="320">MP3 320</MenuItem>
+                        <MenuItem value="128">MP3 128</MenuItem>
+                    </Select>
+                </FormControl>
+                <Box sx={{ flex: '1 1 auto' }} />
+                {batchMutation.isError && (
+                    <Typography variant="caption" color="error.main">
+                        {(batchMutation.error as Error)?.message ?? 'Batch scheduling failed'}
+                    </Typography>
+                )}
+                {batchMutation.data && (
+                    <Typography variant="caption" color="text.secondary">
+                        Queued {batchMutation.data.queued}/{batchMutation.data.requested}
+                    </Typography>
+                )}
+            </Box>
             {orderedTypes.map((type) => (
                 <Box key={type} sx={{ mb: 3 }}>
                     <Typography
@@ -1279,6 +1404,16 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                     <Table size="small">
                         <TableHead>
                             <TableRow>
+                                <TableCell sx={{ width: 44, py: 0.5 }}>
+                                    <Tooltip title={allSelected ? 'Unselect all' : 'Select all'}>
+                                        <Checkbox
+                                            size="small"
+                                            checked={allSelected}
+                                            indeterminate={selectedIds.size > 0 && !allSelected}
+                                            onChange={toggleAll}
+                                        />
+                                    </Tooltip>
+                                </TableCell>
                                 <TableCell sx={{ width: 44 }} />
                                 <TableCell>Album</TableCell>
                                 <TableCell sx={{ width: 60 }} align="right">Tracks</TableCell>
@@ -1288,9 +1423,11 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                             </TableRow>
                         </TableHead>
                         <TableBody>
-                            {grouped.get(type)!.map((album, idx) => {
-                                const rowId = album.mb_releasegroupid || `${album.album}-${idx}`;
+                            {grouped.get(type)!.map((entry) => {
+                                const rowId = entry.id;
+                                const album = entry.album;
                                 const isExpanded = expandedId === rowId;
+                                const isSelected = selectedIds.has(rowId);
                                 const deezerId = album.mb_releasegroupid?.startsWith('deezer:')
                                     ? album.mb_releasegroupid.slice(7)
                                     : null;
@@ -1310,6 +1447,26 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                                 setExpandedId(isExpanded ? null : rowId);
                                             }}
                                         >
+                                            <TableCell
+                                                sx={{ p: 0.5 }}
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <Checkbox
+                                                    size="small"
+                                                    checked={isSelected}
+                                                    onChange={() => {
+                                                        setSelectedIds((prev) => {
+                                                            const next = new Set(prev);
+                                                            if (next.has(rowId)) {
+                                                                next.delete(rowId);
+                                                            } else {
+                                                                next.add(rowId);
+                                                            }
+                                                            return next;
+                                                        });
+                                                    }}
+                                                />
+                                            </TableCell>
                                             <TableCell sx={{ p: 0.5, width: 44 }}>
                                                 {album.cover_url ? (
                                                     <Box
@@ -1382,7 +1539,7 @@ function MissingAlbumsViewer({ albums, artist }: { albums: MissingAlbum[]; artis
                                         </TableRow>
                                         {isExpanded && album.mb_releasegroupid && (
                                             <TableRow key={`${rowId}-tracks`}>
-                                                <TableCell colSpan={6} sx={{ p: 0, borderBottom: 'none' }}>
+                                                <TableCell colSpan={7} sx={{ p: 0, borderBottom: 'none' }}>
                                                     <Collapse in={isExpanded} unmountOnExit>
                                                         <TrackList releaseId={album.mb_releasegroupid} />
                                                     </Collapse>

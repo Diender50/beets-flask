@@ -197,6 +197,174 @@ def _strip_accents(value: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
+def _normalize_download_quality(value: str | None) -> str:
+    q = str(value or "flac").strip().casefold()
+    if q in {"flac", "320", "128"}:
+        return q
+    return "flac"
+
+
+def _quality_to_deemix_bitrate(quality: str) -> str:
+    # deemix bitrate values: 9=FLAC, 3=MP3 320, 1=MP3 128
+    if quality == "320":
+        return "3"
+    if quality == "128":
+        return "1"
+    return "9"
+
+
+def _quality_to_squidwtf_quality(quality: str) -> str:
+    # squidwtf values: 27=FLAC Hi-Res, 7/6=FLAC CD, 5=MP3 320
+    if quality == "320":
+        return "5"
+    if quality == "128":
+        return "5"
+    return "27"
+
+
+def _quality_to_slskd_min_bitrate(quality: str) -> int:
+    if quality == "128":
+        return 128
+    if quality == "320":
+        return 256
+    # For FLAC preference we still use bitrate as a fallback ranking hint.
+    return 320
+
+
+async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
+    provider = str(data.get("provider", "deemix")).strip().casefold()
+    album = str(data.get("album", ""))
+    artist = str(data.get("artist", ""))
+    release_id = str(data.get("release_id", "")).strip() or None
+    quality = _normalize_download_quality(str(data.get("quality", "flac")))
+    output_path = _provider_download_path(provider)
+
+    log.info(
+        "Download request provider=%s quality=%s artist=%s album=%s release_id=%s output=%s",
+        provider,
+        quality,
+        artist,
+        album,
+        release_id,
+        output_path,
+    )
+
+    if provider == "deemix":
+        deezer_id = str(data.get("deezer_id", "")).strip() or None
+        dcfg = _deemix_settings()
+
+        if not deezer_id:
+            if not (artist.strip() or album.strip()):
+                return ({"error": "deezer_id or (artist+album) is required"}, 400)
+            deezer_id = await deemix_provider.resolve_deezer_id_for_album(
+                artist=artist,
+                album=album,
+                timeout_seconds=dcfg["timeout_seconds"],
+            )
+            if not deezer_id:
+                return (
+                    {"error": "Could not resolve Deezer release for deemix download"},
+                    404,
+                )
+
+        job = create_download_job(
+            provider="deemix",
+            deezer_id=deezer_id,
+            album=album,
+            artist=artist,
+            release_id=release_id,
+        )
+
+        asyncio.ensure_future(
+            run_deemix_download(
+                job_id=job["job_id"],
+                deezer_id=deezer_id,
+                output_path=output_path,
+                base_url=dcfg["base_url"],
+                timeout_seconds=dcfg["timeout_seconds"],
+                auth_header=dcfg["auth_header"],
+                arl=dcfg["arl"],
+                bitrate=_quality_to_deemix_bitrate(quality),
+            )
+        )
+        return (job, 202)
+
+    if provider == "slskd":
+        if not album.strip() and not artist.strip():
+            return ({"error": "artist or album required"}, 400)
+
+        scfg = _slskd_settings()
+        selected_candidate = data.get("candidate")
+        job = create_download_job(
+            provider="slskd",
+            album=album,
+            artist=artist,
+            release_id=release_id,
+        )
+
+        asyncio.ensure_future(
+            run_slskd_download(
+                job_id=job["job_id"],
+                artist=artist,
+                album=album,
+                output_path=output_path,
+                base_url=scfg["base_url"],
+                api_key=scfg["api_key"],
+                timeout_seconds=scfg["timeout_seconds"],
+                ranking_mode=scfg["ranking_mode"],
+                min_bitrate_kbps=max(
+                    scfg["min_bitrate_kbps"],
+                    _quality_to_slskd_min_bitrate(quality),
+                ),
+                selected_candidate=selected_candidate if isinstance(selected_candidate, dict) else None,
+            )
+        )
+        return (job, 202)
+
+    if provider == "squidwtf":
+        if not album.strip() and not artist.strip():
+            return ({"error": "artist or album required"}, 400)
+
+        wcfg = _squidwtf_settings()
+        squid_album_id = str(data.get("squid_album_id", "")).strip() or None
+        if not squid_album_id:
+            match = await squidwtf_provider.resolve_squidwtf_match_for_album(
+                artist=artist,
+                album=album,
+                timeout_seconds=min(20, wcfg["timeout_seconds"]),
+                base_url=wcfg["base_url"],
+            )
+            if not match:
+                return ({"error": "Could not resolve SquidWTF release"}, 404)
+            squid_album_id = str(match.get("squid_album_id") or "").strip() or None
+            if not squid_album_id:
+                return ({"error": "SquidWTF album id missing in match"}, 502)
+
+        job = create_download_job(
+            provider="squidwtf",
+            squid_album_id=squid_album_id,
+            album=album,
+            artist=artist,
+            release_id=release_id,
+        )
+
+        asyncio.ensure_future(
+            run_squidwtf_download(
+                job_id=job["job_id"],
+                artist=artist,
+                album=album,
+                squid_album_id=squid_album_id,
+                output_path=output_path,
+                base_url=wcfg["base_url"],
+                timeout_seconds=wcfg["timeout_seconds"],
+                quality=_quality_to_squidwtf_quality(quality),
+            )
+        )
+        return (job, 202)
+
+    return ({"error": "provider must be 'deemix', 'slskd' or 'squidwtf'"}, 400)
+
+
 @discovery_bp.route("/search/artists", methods=["GET"])
 async def search_artists():
     q = request.args.get("q", "").strip()
@@ -263,124 +431,54 @@ async def start_download():
     if not data:
         return jsonify({"error": "request body is required"}), 400
 
+    payload, status = await _schedule_download_from_payload(data)
+    return jsonify(payload), status
+
+
+@discovery_bp.route("/download/batch", methods=["POST"])
+async def start_download_batch():
+    data = await request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body is required"}), 400
+
     provider = str(data.get("provider", "deemix")).strip().casefold()
-    album = str(data.get("album", ""))
-    artist = str(data.get("artist", ""))
-    release_id = str(data.get("release_id", "")).strip() or None
-    output_path = _provider_download_path(provider)
+    quality = _normalize_download_quality(str(data.get("quality", "flac")))
+    albums = data.get("albums")
+    if not isinstance(albums, list) or len(albums) == 0:
+        return jsonify({"error": "albums must be a non-empty list"}), 400
 
-    log.info(
-        "Download request provider=%s artist=%s album=%s release_id=%s output=%s",
-        provider, artist, album, release_id, output_path,
-    )
+    jobs: list[dict] = []
+    errors: list[dict] = []
+    for idx, album_payload in enumerate(albums):
+        if not isinstance(album_payload, dict):
+            errors.append({"index": idx, "error": "album payload must be an object"})
+            continue
 
-    if provider == "deemix":
-        deezer_id = str(data.get("deezer_id", "")).strip() or None
-        dcfg = _deemix_settings()
+        payload = dict(album_payload)
+        payload.setdefault("provider", provider)
+        payload.setdefault("quality", quality)
 
-        if not deezer_id:
-            if not (artist.strip() or album.strip()):
-                return jsonify({"error": "deezer_id or (artist+album) is required"}), 400
-            deezer_id = await deemix_provider.resolve_deezer_id_for_album(
-                artist=artist,
-                album=album,
-                timeout_seconds=dcfg["timeout_seconds"],
-            )
-            if not deezer_id:
-                return jsonify({"error": "Could not resolve Deezer release for deemix download"}), 404
+        job_or_error, status = await _schedule_download_from_payload(payload)
+        if 200 <= status < 300:
+            jobs.append(job_or_error)
+        else:
+            errors.append({
+                "index": idx,
+                "artist": str(payload.get("artist", "")),
+                "album": str(payload.get("album", "")),
+                "error": str(job_or_error.get("error", "Download scheduling failed")),
+                "status": status,
+            })
 
-        job = create_download_job(
-            provider="deemix",
-            deezer_id=deezer_id,
-            album=album,
-            artist=artist,
-            release_id=release_id,
-        )
-
-        asyncio.ensure_future(
-            run_deemix_download(
-                job_id=job["job_id"],
-                deezer_id=deezer_id,
-                output_path=output_path,
-                base_url=dcfg["base_url"],
-                timeout_seconds=dcfg["timeout_seconds"],
-                auth_header=dcfg["auth_header"],
-                arl=dcfg["arl"],
-            )
-        )
-        return jsonify(job), 202
-
-    if provider == "slskd":
-        if not album.strip() and not artist.strip():
-            return jsonify({"error": "artist or album required"}), 400
-
-        scfg = _slskd_settings()
-        selected_candidate = data.get("candidate")
-        job = create_download_job(
-            provider="slskd",
-            album=album,
-            artist=artist,
-            release_id=release_id,
-        )
-
-        asyncio.ensure_future(
-            run_slskd_download(
-                job_id=job["job_id"],
-                artist=artist,
-                album=album,
-                output_path=output_path,
-                base_url=scfg["base_url"],
-                api_key=scfg["api_key"],
-                timeout_seconds=scfg["timeout_seconds"],
-                ranking_mode=scfg["ranking_mode"],
-                min_bitrate_kbps=scfg["min_bitrate_kbps"],
-                selected_candidate=selected_candidate if isinstance(selected_candidate, dict) else None,
-            )
-        )
-        return jsonify(job), 202
-
-    if provider == "squidwtf":
-        if not album.strip() and not artist.strip():
-            return jsonify({"error": "artist or album required"}), 400
-
-        wcfg = _squidwtf_settings()
-        squid_album_id = str(data.get("squid_album_id", "")).strip() or None
-        if not squid_album_id:
-            match = await squidwtf_provider.resolve_squidwtf_match_for_album(
-                artist=artist,
-                album=album,
-                timeout_seconds=min(20, wcfg["timeout_seconds"]),
-                base_url=wcfg["base_url"],
-            )
-            if not match:
-                return jsonify({"error": "Could not resolve SquidWTF release"}), 404
-            squid_album_id = str(match.get("squid_album_id") or "").strip() or None
-            if not squid_album_id:
-                return jsonify({"error": "SquidWTF album id missing in match"}), 502
-
-        job = create_download_job(
-            provider="squidwtf",
-            squid_album_id=squid_album_id,
-            album=album,
-            artist=artist,
-            release_id=release_id,
-        )
-
-        asyncio.ensure_future(
-            run_squidwtf_download(
-                job_id=job["job_id"],
-                artist=artist,
-                album=album,
-                squid_album_id=squid_album_id,
-                output_path=output_path,
-                base_url=wcfg["base_url"],
-                timeout_seconds=wcfg["timeout_seconds"],
-                quality=wcfg["quality"],
-            )
-        )
-        return jsonify(job), 202
-
-    return jsonify({"error": "provider must be 'deemix', 'slskd' or 'squidwtf'"}), 400
+    return jsonify({
+        "provider": provider,
+        "quality": quality,
+        "requested": len(albums),
+        "queued": len(jobs),
+        "failed": len(errors),
+        "jobs": jobs,
+        "errors": errors,
+    }), 202 if jobs else 400
 
 
 @discovery_bp.route("/download/options", methods=["POST"])

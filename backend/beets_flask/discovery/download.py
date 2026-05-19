@@ -309,6 +309,7 @@ async def run_deemix_download(
     timeout_seconds: int,
     auth_header: str | None,
     arl: str | None = None,
+    bitrate: str = "1",
 ) -> None:
     _update_job(job_id, status=DownloadStatus.DOWNLOADING, output_path=output_path, stage="queued", progress_message="Waiting to queue deemix download")
     log.info("Deemix download start %s", _job_summary(job_id, deezer_id=deezer_id, output=output_path))
@@ -321,6 +322,7 @@ async def run_deemix_download(
             timeout_seconds=timeout_seconds,
             auth_header=auth_header,
             arl=arl,
+            bitrate=bitrate,
         )
         if ok:
             _update_job(job_id, stage="done", progress_message="Deemix accepted download request")
