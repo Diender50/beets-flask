@@ -152,6 +152,7 @@ export async function startDownload(opts: {
     quality?: DownloadQuality;
     deezer_id?: string;
     squid_album_id?: string;
+    squid_quality?: string;
     candidate?: Record<string, unknown>;
     release_id?: string;
 }): Promise<DownloadJob> {

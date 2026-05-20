@@ -50,9 +50,6 @@ gui:
         squidwtf:
             # Public SquidWTF qobuz API endpoint.
             base_url: "https://qobuz.squid.wtf"
-            # Qobuz download quality. Named values: flac:hires or flac:24 (24-bit Hi-Res), flac:96 (24-bit/96kHz),
-            # flac:16 or flac:cd (16-bit CD), mp3:320. Raw codes also accepted: 27, 7, 6, 5.
-            quality: "flac:16"
             # Inbox key/name/path where downloads should be written (e.g. Inbox3)
             inbox_folder: ""
             timeout_seconds: 45

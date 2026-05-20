@@ -48,7 +48,6 @@ def _strip_accents(value: str) -> str:
 _QUALITY_ALIAS: dict[str, str] = {
     "flac:hires": "27",
     "flac:24": "27",
-    "flac:96": "7",
     "flac:16": "6",
     "flac:cd": "6",
     "mp3:320": "5",
@@ -289,7 +288,7 @@ async def download_album(
                                     dl_payload = await retry_resp.json(content_type=None)
 
                 if isinstance(dl_payload, dict) and dl_payload.get("success") is False:
-                    log.debug("squidwtf track %d/%d failed: %s", idx, len(tracks), dl_payload.get("error"))
+                    log.warning("squidwtf track %d/%d failed (quality=%s): %s", idx, len(tracks), normalize_squidwtf_quality(quality), dl_payload.get("error"))
                     continue
 
                 media_url = (((dl_payload.get("data") or {}).get("url")) if isinstance(dl_payload, dict) else None)
@@ -328,7 +327,7 @@ async def download_album(
                 success_count += 1
 
             if success_count <= 0:
-                return (False, "squidwtf download produced no files")
+                return (False, f"squidwtf download produced no files (quality code={normalize_squidwtf_quality(quality)})")
             return (True, f"downloaded {success_count}/{len(tracks)} tracks")
     except Exception as exc:
         log.exception("squidwtf download failed album_id=%s", album_id)
@@ -376,7 +375,7 @@ def quality_label_to_display(quality: str) -> dict[str, Any]:
     q = normalize_squidwtf_quality(quality)
     if q == "27":
         return {"container": "FLAC", "kbps": 2000}
-    if q in {"7", "6"}:
+    if q == "6":
         return {"container": "FLAC", "kbps": 1411}
     if q == "5":
         return {"container": "MP3", "kbps": 320}

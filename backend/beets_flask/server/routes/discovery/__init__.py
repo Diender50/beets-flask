@@ -216,7 +216,6 @@ def _squidwtf_settings() -> dict:
     return {
         "base_url": _cfg_str(base + ["base_url"], "https://qobuz.squid.wtf"),
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 45),
-        "quality": _cfg_str(base + ["quality"], "flac_hires") or "flac_hires",
     }
 
 
@@ -256,15 +255,6 @@ def _quality_to_deemix_bitrate(quality: str) -> str:
     if quality == "128":
         return "1"
     return "9"
-
-
-def _quality_to_squidwtf_quality(quality: str) -> str:
-    # Convert internal quality labels (flac/320/128) then named/numeric aliases to squidwtf codes.
-    q = str(quality or "").strip().lower()
-    if q in {"320", "128", "mp3", "mp3_320"}:
-        return "5"
-    # Delegate named and numeric aliases to squidwtf provider normalizer.
-    return squidwtf_provider.normalize_squidwtf_quality(quality)
 
 
 
@@ -418,7 +408,9 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
                 output_path=output_path,
                 base_url=wcfg["base_url"],
                 timeout_seconds=wcfg["timeout_seconds"],
-                quality=_quality_to_squidwtf_quality(quality),
+                quality=squidwtf_provider.normalize_squidwtf_quality(
+                    str(data.get("squid_quality", "27")).strip() or "27"
+                ),
             )
         )
         return (job, 202)
@@ -916,24 +908,29 @@ async def download_options():
         if not match:
             return []
 
-        quality_info = squidwtf_provider.quality_label_to_display(wcfg["quality"])
-        return [
-            _download_suggestion_summary(
-                provider="squidwtf",
-                score=float(match.get("score") or 0.0),
-                title=str(match.get("title") or album),
-                artist=str(match.get("artist") or artist),
-                details={
-                    "squid_album_id": match.get("squid_album_id"),
-                    "trackCount": match.get("track_count"),
-                    "quality": wcfg["quality"],
-                    "container": quality_info.get("container"),
-                    "kbps": quality_info.get("kbps"),
-                    "source": "qobuz",
-                    "url": f"{base_url.rstrip('/')}/api/get-album?album_id={match.get('squid_album_id')}",
-                },
+        base_score = float(match.get("score") or 0.0)
+        squid_album_id = match.get("squid_album_id")
+        results = []
+        for q_alias, q_code in [("flac:hires", "27"), ("flac:16", "6"), ("mp3:320", "5")]:
+            quality_info = squidwtf_provider.quality_label_to_display(q_alias)
+            results.append(
+                _download_suggestion_summary(
+                    provider="squidwtf",
+                    score=base_score,
+                    title=str(match.get("title") or album),
+                    artist=str(match.get("artist") or artist),
+                    details={
+                        "squid_album_id": squid_album_id,
+                        "trackCount": match.get("track_count"),
+                        "quality": q_code,
+                        "container": quality_info.get("container"),
+                        "kbps": quality_info.get("kbps"),
+                        "source": "qobuz",
+                        "url": f"{base_url.rstrip('/')}/api/get-album?album_id={squid_album_id}",
+                    },
+                )
             )
-        ]
+        return results
 
     deemix_options: list[dict] = []
     slskd_options: list[dict] = []

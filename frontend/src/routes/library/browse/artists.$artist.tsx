@@ -905,7 +905,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                 const merged = [...prev, ...incoming];
                 const seen = new Set<string>();
                 const deduped = merged.filter((choice) => {
-                    const key = `${choice.provider}:${String(choice.details.deezer_id ?? '')}:${String(choice.details.folder ?? '')}:${choice.title}`;
+                    const key = `${choice.provider}:${String(choice.details.deezer_id ?? '')}:${String(choice.details.folder ?? '')}:${String(choice.details.quality ?? '')}:${choice.title}`;
                     if (seen.has(key)) return false;
                     seen.add(key);
                     return true;
@@ -1048,6 +1048,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     provider: 'squidwtf',
                     squid_album_id: String(choice.details.squid_album_id ?? ''),
                     release_id: releaseId,
+                    squid_quality: String(choice.details.quality ?? '27'),
                 });
             }
             return startDownload({
