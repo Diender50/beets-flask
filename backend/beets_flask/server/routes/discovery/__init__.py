@@ -241,30 +241,178 @@ def _strip_accents(value: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
-def _normalize_download_quality(value: str | None) -> str:
-    q = str(value or "flac").strip().casefold()
-    if q in {"flac", "320", "128"}:
-        return q
-    return "flac"
+# ── Quality helpers ───────────────────────────────────────────────────────────
+
+_DEFAULT_QUALITY_PRIORITY: list[str] = [
+    "flac:24", "flac:16",
+    "mp3:320", "opus:320", "m4a:320",
+    "mp3:256", "opus:256", "m4a:256",
+    "mp3:192", "opus:192", "m4a:192",
+    "mp3:128", "opus:128", "m4a:128",
+    "mp3:96",  "opus:96",  "m4a:96",
+    "mp3:64",  "opus:64",  "m4a:64",
+]
+_LOSSY_KBPS_LADDER = [320, 256, 192, 128, 96, 64]
 
 
-def _quality_to_deemix_bitrate(quality: str) -> str:
-    # deemix bitrate values: 9=FLAC, 3=MP3 320, 1=MP3 128
-    if quality == "320":
+def _expand_quality_token(token: str) -> list[str]:
+    """Expand a bare quality alias to specific ordered tokens.
+
+    "flac" → ["flac:24", "flac:16"]
+    "mp3"  → ["mp3:320", "mp3:256", "mp3:192", "mp3:128"]
+    Already specific tokens (e.g. "flac:16", "mp3:320") pass through unchanged.
+    """
+    q = token.strip().casefold()
+    if ":" in q:
+        return [q]
+    if q == "flac":
+        return ["flac:24", "flac:16"]
+    if q in ("mp3", "opus", "ogg", "m4a", "aac", "vorbis"):
+        return [f"{q}:{kbps}" for kbps in _LOSSY_KBPS_LADDER]
+    return [q]
+
+
+def _parse_quality(quality: str) -> tuple[str, str]:
+    """Return (container, spec) from a token like 'flac:24' or 'mp3:320'."""
+    container, _, spec = quality.strip().casefold().partition(":")
+    return container, spec
+
+
+def _auto_download_quality_priority() -> list[str]:
+    """Load quality priority list from config, expanding bare tokens."""
+    try:
+        cfg = get_config()
+        raw = cfg["gui"]["discovery"]["auto_download"]["quality_priority"].get(list)
+        if isinstance(raw, list) and raw:
+            result: list[str] = []
+            for item in raw:
+                result.extend(_expand_quality_token(str(item).strip()))
+            return result
+    except Exception:
+        pass
+    return list(_DEFAULT_QUALITY_PRIORITY)
+
+
+def _deemix_bitrate_for_quality(quality: str) -> str | None:
+    """Map a quality token to a deemix bitrate code, or None if not natively supported.
+
+    Deemix/Deezer native tiers: 9=FLAC (16-bit CD), 3=MP3 320, 1=MP3 128.
+    flac:24 is not available on Deezer (CD quality only).
+    Old bare tokens "320" and "128" are accepted for backward compat.
+    """
+    container, spec = _parse_quality(quality)
+    if container in ("320",):
         return "3"
-    if quality == "128":
+    if container in ("128",):
         return "1"
-    return "9"
+    if container == "flac":
+        return None if spec == "24" else "9"
+    if container == "mp3":
+        try:
+            kbps = int(spec) if spec else 320
+        except ValueError:
+            kbps = 320
+        if kbps >= 320:
+            return "3"
+        if kbps == 128:
+            return "1"
+    return None
 
 
+def _deemix_account_can_do(quality: str, max_quality: str) -> bool:
+    """Check if the deemix account tier supports this quality level."""
+    bitrate = _deemix_bitrate_for_quality(quality)
+    if bitrate is None:
+        return False
+    if bitrate == "9":
+        return max_quality == "flac"
+    if bitrate == "3":
+        return max_quality in ("flac", "320")
+    return True  # MP3 128: any account tier
 
-def _quality_rank(quality: str) -> int:
-    if quality == "flac":
-        return 3
-    if quality == "320":
+
+def _squidwtf_code_for_quality(quality: str) -> str | None:
+    """Map quality token to a squidwtf quality code, or None if not supported.
+
+    squidwtf supports: 27=FLAC 24-bit, 6=FLAC 16-bit, 5=MP3 320.
+    """
+    container, spec = _parse_quality(quality)
+    if container == "flac":
+        return "6" if spec == "16" else "27"
+    if container == "mp3":
+        try:
+            kbps = int(spec) if spec else 320
+        except ValueError:
+            kbps = 320
+        return "5" if kbps >= 320 else None
+    return None
+
+
+# Per-codec kbps thresholds for perceptual quality tiers.
+# Opus/OGG ~2× more efficient than MP3; AAC/M4A ~1.5×.
+_LOSSY_HIGH_KBPS: dict[str, int] = {
+    "mp3": 320, "opus": 192, "m4a": 256, "aac": 256, "ogg": 192, "vorbis": 192,
+}
+_LOSSY_MED_KBPS: dict[str, int] = {
+    "mp3": 160, "opus": 96, "m4a": 96, "aac": 96, "ogg": 96, "vorbis": 96,
+}
+
+
+def _lossy_tier(container: str, kbps: float) -> int:
+    """Return 2=high, 1=medium, 0=low for a lossy codec at given kbps."""
+    if kbps >= _LOSSY_HIGH_KBPS.get(container, 192):
         return 2
-    return 1
+    if kbps >= _LOSSY_MED_KBPS.get(container, 96):
+        return 1
+    return 0
 
+
+def _slskd_candidate_matches_quality(candidate: dict, quality: str) -> bool:
+    """Return True if the slskd candidate satisfies the quality requirement.
+
+    For lossless (FLAC): matches by bitDepth/sampleRate.
+    For lossy (VBR-aware): uses per-codec transparency tiers instead of a flat
+    kbps tolerance. A candidate matches when its perceptual tier >= the tier of
+    the requested quality token, so an opus file at 146 kbps (medium) matches
+    opus:128 (medium) but not opus:192 (high).
+    """
+    ext = str(candidate.get("extension") or "").casefold()
+    container, spec = _parse_quality(quality)
+    if container == "aac":
+        container = "m4a"
+    if ext == "aac":
+        ext = "m4a"
+    if ext != container:
+        return False
+    if not spec:
+        return True
+    if container == "flac":
+        try:
+            bits = int(spec)
+        except ValueError:
+            return True
+        if bits >= 24:
+            return int(candidate.get("bitDepth") or 0) >= 24 or int(candidate.get("sampleRate") or 0) >= 88200
+        return True  # flac:16 accepts any FLAC
+    try:
+        target_kbps = float(spec)
+    except ValueError:
+        return True
+    mean = candidate.get("meanAudioBitrateKbps")
+    if mean is None:
+        return True  # no bitrate info — optimistically accept
+    return _lossy_tier(container, float(mean)) >= _lossy_tier(container, target_kbps)
+
+
+def _search_query_variants(artist: str, album: str) -> list[tuple[str, str]]:
+    variants: list[tuple[str, str]] = [(artist, album)]
+    fa, fb = _strip_accents(artist), _strip_accents(album)
+    if (fa, fb) != (artist, album):
+        variants.append((fa, fb))
+    return variants
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _deemix_available_quality(account_quality: dict | None) -> str:
     """Map deemix account capability to one of: flac|320|128."""
@@ -292,7 +440,7 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
     album = str(data.get("album", ""))
     artist = str(data.get("artist", ""))
     release_id = str(data.get("release_id", "")).strip() or None
-    quality = _normalize_download_quality(str(data.get("quality", "flac")))
+    quality = str(data.get("quality", "flac")).strip().casefold() or "flac"
     output_path = _provider_download_path(provider)
 
     log.info(
@@ -340,7 +488,7 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
                 timeout_seconds=dcfg["timeout_seconds"],
                 auth_header=dcfg["auth_header"],
                 arl=dcfg["arl"],
-                bitrate=_quality_to_deemix_bitrate(quality),
+                bitrate=_deemix_bitrate_for_quality(quality) or "9",
             )
         )
         return (job, 202)
@@ -421,181 +569,147 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
 async def _find_best_match_across_providers(
     album_payload: dict,
     providers: list[str],
-    qualities: list[str],
+    qualities: list[str] | None = None,
 ) -> dict | None:
-    """Search all providers across quality priorities and return best match payload.
-    
-    Quality priority: flac > 320 > 128
-    Within same quality: highest match score wins
+    """Search each provider once, then iterate quality priority to select best match.
+
+    Phase 1 — probe: deemix (album ID + account tier), slskd (search + rank),
+    squidwtf (album ID). Each provider queried at most once.
+    Phase 2 — select: walk quality_priority; at the first tier where any provider
+    can deliver, return the highest-scored candidate.
+
+    `qualities`: caller-supplied ordered list (raw tokens, may include bare aliases
+    like "flac" or "mp3"); if None, the config priority list is used.
     """
     artist = str(album_payload.get("artist", "")).strip()
     album = str(album_payload.get("album", "")).strip()
-    release_id = str(album_payload.get("release_id", "")).strip() or None
-    
+
     if not artist and not album:
         log.warning("_find_best_match: no artist or album")
         return None
-    
+
+    # Build quality priority from caller list or config default.
+    if qualities:
+        quality_priority: list[str] = []
+        for q in qualities:
+            quality_priority.extend(_expand_quality_token(q))
+    else:
+        quality_priority = _auto_download_quality_priority()
+
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
     wcfg = _squidwtf_settings()
-    deemix_account_quality: dict | None = None
+
+    # ── Phase 1: probe each provider once ─────────────────────────────────
+
+    deemix_id: str | None = str(album_payload.get("deezer_id", "")).strip() or None
+    deemix_score: float = 1.0
     deemix_max_quality = "128"
+
     if "deemix" in providers and dcfg["base_url"]:
         try:
-            deemix_account_quality = await deemix_provider.resolve_quality_from_arl(
+            aq = await deemix_provider.resolve_quality_from_arl(
                 base_url=dcfg["base_url"],
                 timeout_seconds=dcfg["timeout_seconds"],
                 auth_header=dcfg["auth_header"],
                 arl=dcfg["arl"],
             )
         except Exception as exc:
-            log.warning("_find_best_match: deemix account quality detection failed: %s", exc)
-            deemix_account_quality = None
-        deemix_max_quality = _deemix_available_quality(deemix_account_quality)
-    
-    # Quality priority order
-    quality_priority = ["flac", "320", "128"]
-    # Filter to only requested qualities, maintaining priority order
-    requested_qualities = [q for q in quality_priority if q in qualities]
-    
-    for quality in requested_qualities:
-        log.info("_find_best_match: trying quality=%s artist=%s album=%s", quality, artist, album)
-        
-        results: list[tuple[float, dict]] = []
-        
-        # Try each provider for this quality
-        for provider in providers:
-            try:
-                if provider == "deemix":
-                    if not dcfg["base_url"]:
-                        log.debug("deemix not configured, skipping")
-                        continue
+            log.warning("_find_best_match: deemix quality detection failed: %s", exc)
+            aq = None
+        deemix_max_quality = _deemix_available_quality(aq)
 
-                    if _quality_rank(quality) > _quality_rank(deemix_max_quality):
-                        log.info(
-                            "_find_best_match: skipping deemix quality=%s (account_max=%s)",
-                            quality,
-                            deemix_max_quality,
-                        )
-                        continue
-                    
-                    # Try deezer ID if provided
-                    deezer_id = str(album_payload.get("deezer_id", "")).strip() or None
-                    deemix_match_score = 1.0
-                    if not deezer_id:
-                        # Search for match
-                        query_attempts = [(artist, album)]
-                        fallback_artist = _strip_accents(artist)
-                        fallback_album = _strip_accents(album)
-                        if (fallback_artist, fallback_album) != (artist, album):
-                            query_attempts.append((fallback_artist, fallback_album))
-                        
-                        for q_artist, q_album in query_attempts:
-                            try:
-                                match = await deemix_provider.resolve_deezer_match_for_album(
-                                    artist=q_artist,
-                                    album=q_album,
-                                    timeout_seconds=dcfg["timeout_seconds"],
-                                )
-                                if match:
-                                    deezer_id = match.get("deezer_id")
-                                    deemix_match_score = float(match.get("score") or 0.0)
-                                    break
-                            except Exception as exc:
-                                log.debug("deemix match search failed: %s", exc)
-                    
-                    if deezer_id:
-                        payload = dict(album_payload)
-                        payload.update({
-                            "provider": "deemix",
-                            "quality": quality,
-                            "deezer_id": deezer_id,
-                        })
-                        results.append((deemix_match_score, payload))
-                        log.debug(
-                            "deemix: found match deezer_id=%s score=%.2f max_quality=%s",
-                            deezer_id,
-                            deemix_match_score,
-                            deemix_max_quality,
-                        )
-                
-                elif provider == "slskd":
-                    if not scfg["base_url"]:
-                        log.debug("slskd not configured, skipping")
-                        continue
-                    
-                    candidates = []
-                    try:
-                        candidates = await slskd_provider.search_album(
-                            base_url=scfg["base_url"],
-                            api_key=scfg["api_key"],
-                            artist=artist,
-                            album=album,
-                            timeout_seconds=scfg["timeout_seconds"],
-                        )
-                    except Exception as exc:
-                        log.debug("slskd search failed: %s", exc)
-                    
-                    if candidates:
-                        ranked = slskd_provider.rank_candidates(candidates, album_hint=album)
-                        if ranked:
-                            best_candidate = ranked[0]
-                            score = float(slskd_provider.score_candidate(
-                                best_candidate,
-                                album_hint=album,
-                            ))
-                            
-                            payload = dict(album_payload)
-                            payload.update({
-                                "provider": "slskd",
-                                "quality": quality,
-                                "candidate": best_candidate,
-                            })
-                            results.append((score, payload))
-                            log.debug("slskd: found match score=%.2f", score)
-                
-                elif provider == "squidwtf":
-                    if not wcfg["base_url"]:
-                        log.debug("squidwtf not configured, skipping")
-                        continue
-                    
-                    squid_album_id = str(album_payload.get("squid_album_id", "")).strip() or None
-                    if not squid_album_id:
-                        try:
-                            match = await squidwtf_provider.resolve_squidwtf_match_for_album(
-                                artist=artist,
-                                album=album,
-                                timeout_seconds=min(20, wcfg["timeout_seconds"]),
-                                base_url=wcfg["base_url"],
-                            )
-                            if match:
-                                squid_album_id = str(match.get("squid_album_id") or "").strip()
-                        except Exception as exc:
-                            log.debug("squidwtf match search failed: %s", exc)
-                    
-                    if squid_album_id:
-                        payload = dict(album_payload)
-                        payload.update({
-                            "provider": "squidwtf",
-                            "quality": quality,
-                            "squid_album_id": squid_album_id,
-                        })
-                        results.append((1.0, payload))  # squidwtf gets score 1.0 if found
-                        log.debug("squidwtf: found match album_id=%s", squid_album_id)
-            
-            except Exception as exc:
-                log.warning("_find_best_match: error searching provider=%s quality=%s: %s", provider, quality, exc)
-        
-        # If we found matches for this quality, return the best one
+        if not deemix_id:
+            for q_artist, q_album in _search_query_variants(artist, album):
+                try:
+                    m = await deemix_provider.resolve_deezer_match_for_album(
+                        artist=q_artist,
+                        album=q_album,
+                        timeout_seconds=dcfg["timeout_seconds"],
+                    )
+                    if m:
+                        deemix_id = m.get("deezer_id")
+                        deemix_score = float(m.get("score") or 0.0)
+                        break
+                except Exception as exc:
+                    log.debug("deemix match search failed: %s", exc)
+
+    slskd_ranked: list[dict] = []
+    if "slskd" in providers and scfg["base_url"]:
+        try:
+            candidates = await slskd_provider.search_album(
+                base_url=scfg["base_url"],
+                api_key=scfg["api_key"],
+                artist=artist,
+                album=album,
+                timeout_seconds=scfg["timeout_seconds"],
+            )
+            slskd_ranked = slskd_provider.rank_candidates(candidates, album_hint=album)
+        except Exception as exc:
+            log.debug("slskd search failed: %s", exc)
+
+    squid_id: str | None = str(album_payload.get("squid_album_id", "")).strip() or None
+    if "squidwtf" in providers and wcfg["base_url"] and not squid_id:
+        try:
+            m = await squidwtf_provider.resolve_squidwtf_match_for_album(
+                artist=artist,
+                album=album,
+                timeout_seconds=min(20, wcfg["timeout_seconds"]),
+                base_url=wcfg["base_url"],
+            )
+            if m:
+                squid_id = str(m.get("squid_album_id") or "").strip() or None
+        except Exception as exc:
+            log.debug("squidwtf search failed: %s", exc)
+
+    # ── Phase 2: iterate quality priority ─────────────────────────────────
+
+    for quality in quality_priority:
+        results: list[tuple[float, dict]] = []
+
+        if deemix_id and "deemix" in providers and dcfg["base_url"]:
+            if _deemix_account_can_do(quality, deemix_max_quality):
+                payload = dict(album_payload)
+                payload.update({"provider": "deemix", "quality": quality, "deezer_id": deemix_id})
+                results.append((deemix_score, payload))
+
+        if slskd_ranked and "slskd" in providers and scfg["base_url"]:
+            matching = [c for c in slskd_ranked if _slskd_candidate_matches_quality(c, quality)]
+            if matching:
+                best = matching[0]
+                score = float(slskd_provider.score_candidate(best, album_hint=album))
+                payload = dict(album_payload)
+                payload.update({"provider": "slskd", "quality": quality, "candidate": best})
+                results.append((score, payload))
+
+        if squid_id and "squidwtf" in providers and wcfg["base_url"]:
+            squid_code = _squidwtf_code_for_quality(quality)
+            if squid_code:
+                payload = dict(album_payload)
+                payload.update({
+                    "provider": "squidwtf",
+                    "quality": quality,
+                    "squid_album_id": squid_id,
+                    "squid_quality": squid_code,
+                })
+                results.append((1.0, payload))
+
         if results:
             best_score, best_payload = max(results, key=lambda x: x[0])
-            log.info("_find_best_match: selected provider=%s quality=%s score=%.2f", 
-                     best_payload.get("provider"), best_payload.get("quality"), best_score)
+            log.info(
+                "_find_best_match: selected provider=%s quality=%s score=%.2f",
+                best_payload.get("provider"), quality, best_score,
+            )
             return best_payload
-    
+
     log.warning("_find_best_match: no match found for artist=%s album=%s", artist, album)
     return None
+
+
+@discovery_bp.route("/quality-priority", methods=["GET"])
+async def get_quality_priority():
+    """Return the configured quality priority list for batch/auto downloads."""
+    return jsonify({"quality_priority": _auto_download_quality_priority()})
 
 
 @discovery_bp.route("/search/artists", methods=["GET"])
@@ -679,22 +793,20 @@ async def start_download_batch():
     if not isinstance(data, dict):
         return jsonify({"error": "request body is required"}), 400
 
-    providers_raw = data.get("providers", ["deemix"])
-    qualities_raw = data.get("qualities", ["flac"])
-    
-    if not isinstance(providers_raw, list) or len(providers_raw) == 0:
-        providers_raw = ["deemix"]
-    if not isinstance(qualities_raw, list) or len(qualities_raw) == 0:
-        qualities_raw = ["flac"]
-    
+    providers_raw = data.get("providers", [])
+    qualities_raw = data.get("qualities") or None  # None → use config priority
+
+    providers_raw = providers_raw if isinstance(providers_raw, list) else []
     providers = [str(p).strip().casefold() for p in providers_raw]
     providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf")]
-    qualities = [_normalize_download_quality(str(q)) for q in qualities_raw]
-    
     if not providers:
-        providers = ["deemix"]
-    if not qualities:
-        qualities = ["flac"]
+        providers = ["deemix", "slskd", "squidwtf"]
+
+    # qualities: caller-supplied ordered priority list; None means use config default.
+    # Bare tokens ("flac", "mp3") are expanded inside _find_best_match_across_providers.
+    qualities: list[str] | None = None
+    if isinstance(qualities_raw, list) and qualities_raw:
+        qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
     
     albums = data.get("albums")
     if not isinstance(albums, list) or len(albums) == 0:

@@ -58,6 +58,29 @@ def _file_extension(filename: str, extension: str | None = None) -> str:
     return basename.rsplit(".", 1)[-1].casefold().strip()
 
 
+def _parse_duration_seconds(value: Any) -> int:
+    """Parse duration to seconds. Handles int seconds, float, and 'MM:SS' / 'HH:MM:SS' strings."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    s = str(value).strip()
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            parts_int = [int(p) for p in parts]
+            if len(parts_int) == 2:
+                return parts_int[0] * 60 + parts_int[1]
+            if len(parts_int) == 3:
+                return parts_int[0] * 3600 + parts_int[1] * 60 + parts_int[2]
+        except ValueError:
+            pass
+    try:
+        return max(0, int(float(s)))
+    except ValueError:
+        return 0
+
+
 def _estimate_kbps(file_entry: dict[str, Any]) -> float | None:
     bitrate = file_entry.get("bitRate") or file_entry.get("bitrate") or file_entry.get("kbps")
     if bitrate is not None:
@@ -69,11 +92,11 @@ def _estimate_kbps(file_entry: dict[str, Any]) -> float | None:
             pass
 
     size_bytes = _safe_int(file_entry.get("size"))
-    length_seconds = _safe_int(file_entry.get("length"))
+    length_seconds = _parse_duration_seconds(file_entry.get("length"))
     if size_bytes <= 0 or length_seconds <= 0:
         return None
 
-    return (size_bytes * 8.0) / max(length_seconds, 1) / 1000.0
+    return (size_bytes * 8.0) / length_seconds / 1000.0
 
 
 def _audio_quality_score(extension: str, sample_rate: int, bit_depth: int) -> float:

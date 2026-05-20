@@ -1,5 +1,19 @@
 import { queryOptions } from '@tanstack/react-query';
 
+/* ─────────────────────── Quality Priority ──────────────────────── */
+
+export const qualityPriorityQueryOptions = () =>
+    queryOptions({
+        queryKey: ['qualityPriority'],
+        queryFn: async (): Promise<string[]> => {
+            const response = await fetch('/discovery/quality-priority');
+            if (!response.ok) return [];
+            const data = await response.json();
+            return Array.isArray(data.quality_priority) ? data.quality_priority : [];
+        },
+        staleTime: Infinity,
+    });
+
 /* ─────────────────────── Followed Artists ──────────────────────── */
 
 export interface FollowedArtist {

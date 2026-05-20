@@ -54,3 +54,35 @@ gui:
             inbox_folder: ""
             timeout_seconds: 45
 
+        auto_download:
+            # Quality priority list for batch/auto downloads (highest priority first).
+            # Each entry is "container" or "container:spec":
+            #   flac:24  — lossless 24-bit hi-res (squidwtf only)
+            #   flac:16  — lossless 16-bit CD quality
+            #   mp3:NNN  — MP3 at NNN kbps (e.g. mp3:320, mp3:128)
+            #   opus:NNN, m4a:NNN — lossy at NNN kbps (slskd only)
+            # Bare "flac" expands to flac:24 then flac:16.
+            # Bare "mp3" expands to mp3:320, mp3:256, mp3:192, mp3:128.
+            quality_priority:
+                - flac:24
+                - flac:16
+                - mp3:320
+                - opus:320
+                - opus:256
+                - m4a:320
+                - m4a:256
+                - opus:192
+                - m4a:192
+                - mp3:256
+                - opus:128
+                - m4a:128
+                - mp3:192
+                - mp3:128
+                - opus:96
+                - m4a:96
+                - mp3:96
+                - opus:64
+                - m4a:64
+                - mp3:64
+
+

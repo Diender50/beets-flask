@@ -14,7 +14,6 @@ import {
     Checkbox,
     Collapse,
     Divider,
-    FormControl,
     FormControlLabel,
     FormGroup,
     IconButton,
@@ -55,6 +54,7 @@ import {
     DownloadSuggestion,
     getDownloadJob,
     getDownloadSuggestions,
+    qualityPriorityQueryOptions,
     startBatchDownload,
     startDownload,
 } from '@/api/discovery';
@@ -199,10 +199,7 @@ function Viewer({
     const [albumTypeFilter, setAlbumTypeFilter] = useState<string | null>(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
 
-    const missingAlbumsQuery = useQuery({
-        ...missingAlbumsByArtistQueryOptions(artist),
-        enabled: selected === 'missing',
-    });
+    const missingAlbumsQuery = useQuery(missingAlbumsByArtistQueryOptions(artist));
     const missingAlbums = missingAlbumsQuery.data ?? [];
 
     const handleRefreshMissing = async () => {
@@ -1487,9 +1484,30 @@ function MissingAlbumsViewer({
     const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf'>>(
         new Set(['deemix', 'slskd', 'squidwtf'])
     );
-    const [batchQualities, setBatchQualities] = useState<Set<DownloadQuality>>(
-        new Set(['flac', '320', '128'])
+
+    const { data: qualityPriority = [] } = useQuery(qualityPriorityQueryOptions());
+
+    // Four simplified tiers — all enabled by default.
+    const [batchTiers, setBatchTiers] = useState<Set<string>>(
+        new Set(['flac', 'high', 'medium', 'low'])
     );
+
+    // Ordered quality tokens sent to backend: config order, filtered to checked tiers.
+    const selectedQualities = useMemo(() => {
+        // Per-codec transparency thresholds (kbps).
+        // Opacity: Opus ~2× more efficient than MP3, AAC/OGG ~1.5×.
+        const HIGH: Record<string, number> = { mp3: 320, opus: 192, m4a: 256, aac: 256, ogg: 192, vorbis: 192 };
+        const MED:  Record<string, number> = { mp3: 160, opus:  96, m4a:  96, aac:  96, ogg:  96, vorbis:  96 };
+        const tierOf = (q: string): string => {
+            const [container, spec] = q.split(':');
+            if (container === 'flac') return 'flac';
+            const kbps = parseInt(spec ?? '0', 10);
+            if (kbps >= (HIGH[container] ?? 192)) return 'high';
+            if (kbps >= (MED[container]  ??  96)) return 'medium';
+            return 'low';
+        };
+        return qualityPriority.filter((q: string) => batchTiers.has(tierOf(q)));
+    }, [qualityPriority, batchTiers]);
 
     const albumEntries = useMemo(() => {
         return albums.map((album, idx) => ({
@@ -1537,7 +1555,7 @@ function MissingAlbumsViewer({
 
             return startBatchDownload({
                 providers: Array.from(batchProviders),
-                qualities: Array.from(batchQualities),
+                qualities: selectedQualities,
                 albums: payload,
             });
         },
@@ -1585,32 +1603,24 @@ function MissingAlbumsViewer({
 
     return (
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            {/* Batch download controls */}
             <Box
                 sx={{
-                    display: 'grid',
-                    gridTemplateColumns: 'auto 1fr',
+                    display: 'flex',
+                    alignItems: 'center',
                     gap: 2,
-                    alignItems: 'stretch',
-                    px: 1.25,
-                    py: 1.25,
+                    px: 1.5,
+                    py: 1,
                     mb: 1,
                     border: 1,
                     borderColor: 'divider',
                     borderRadius: 1,
                     backgroundColor: 'grey.900',
+                    flexWrap: 'wrap',
                 }}
             >
-                <Box
-                    sx={{
-                        pr: 2,
-                        borderRight: 1,
-                        borderColor: 'divider',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'center',
-                        gap: 0.5,
-                    }}
-                >
+                {/* Left: action buttons */}
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 160 }}>
                     <Button
                         variant="contained"
                         color="primary"
@@ -1620,20 +1630,12 @@ function MissingAlbumsViewer({
                             selectedIds.size === 0 ||
                             batchMutation.isPending ||
                             batchProviders.size === 0 ||
-                            batchQualities.size === 0
+                            selectedQualities.length === 0
                         }
                         onClick={() => batchMutation.mutate()}
-                        sx={{
-                            minWidth: 190,
-                            height: 36,
-                            fontWeight: 700,
-                            letterSpacing: 0.2,
-                            textTransform: 'none',
-                        }}
+                        sx={{ fontWeight: 700, textTransform: 'none', height: 32 }}
                     >
-                        {batchMutation.isPending
-                            ? 'Scheduling...'
-                            : `Batch Download (${selectedIds.size})`}
+                        {batchMutation.isPending ? 'Scheduling…' : `Download (${selectedIds.size})`}
                     </Button>
                     <FormControlLabel
                         sx={{ m: 0 }}
@@ -1645,92 +1647,100 @@ function MissingAlbumsViewer({
                                 onChange={toggleAll}
                             />
                         }
-                        label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Select all</Typography>}
+                        label={<Typography variant="caption">Select all</Typography>}
                     />
                 </Box>
-                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, alignItems: 'start' }}>
-                    <FormControl component="fieldset" size="small">
-                        <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
-                            Providers
-                        </Typography>
-                        <Typography variant="caption" sx={{ fontSize: '0.7rem', opacity: 0.8 }}>
-                            Manual downloads are not affected by providers selection
-                        </Typography>
-                        <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
-                        {(['deemix', 'slskd', 'squidwtf'] as const).map((provider) => (
+
+                <Divider orientation="vertical" flexItem />
+
+                {/* Providers */}
+                <Box>
+                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>
+                        Providers
+                    </Typography>
+                    <FormGroup row sx={{ gap: 0.25 }}>
+                        {(['deemix', 'slskd', 'squidwtf'] as const).map((p) => (
                             <FormControlLabel
-                                key={provider}
-                                sx={{ mr: 1.5, ml: 0, alignItems: 'center' }}
+                                key={p}
+                                sx={{ mr: 1, ml: 0 }}
                                 control={
                                     <Checkbox
                                         size="small"
-                                        checked={batchProviders.has(provider)}
-                                        onChange={(e) => {
-                                            setBatchProviders((prev) => {
+                                        checked={batchProviders.has(p)}
+                                        onChange={(e: { target: { checked: boolean } }) =>
+                                            setBatchProviders((prev: Set<'deemix' | 'slskd' | 'squidwtf'>) => {
                                                 const next = new Set(prev);
-                                                if (e.target.checked) {
-                                                    next.add(provider);
-                                                } else {
-                                                    next.delete(provider);
-                                                }
+                                                e.target.checked ? next.add(p) : next.delete(p);
                                                 return next;
-                                            });
-                                        }}
+                                            })
+                                        }
                                     />
                                 }
-                                label={<Typography variant="caption" sx={{ textTransform: 'lowercase' }}>{provider}</Typography>}
+                                label={<Typography variant="caption">{p}</Typography>}
                             />
                         ))}
-                        </FormGroup>
-                    </FormControl>
-                    <FormControl component="fieldset" size="small">
-                        <Typography variant="caption" sx={{ fontWeight: 700, mb: 0.75, display: 'block' }}>
-                            Qualities
-                        </Typography>
-                        <Typography variant="caption" sx={{ fontSize: '0.7rem', opacity: 0.8 }}>
-                                The best quality will be selected for each album based on availability
-                        </Typography>
-                        <FormGroup row sx={{ gap: 0.5, alignItems: 'center' }}>
-                        {(['flac', '320', '128'] as const).map((quality) => (
+                    </FormGroup>
+                </Box>
+
+                <Divider orientation="vertical" flexItem />
+
+                {/* Qualities */}
+                <Box>
+                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>
+                        Qualities
+                    </Typography>
+                    <FormGroup row sx={{ gap: 0.25 }}>
+                        {(
+                            [
+                                { id: 'flac',   label: 'FLAC',          desc: 'Lossless' },
+                                { id: 'high',   label: 'High Lossy',    desc: '≥ 192 kbps' },
+                                { id: 'medium', label: 'Med. Lossy',    desc: '96–191 kbps' },
+                                { id: 'low',    label: 'Low Lossy',     desc: '< 96 kbps' },
+                            ] as const
+                        ).map(({ id, label, desc }) => (
                             <FormControlLabel
-                                key={quality}
-                                sx={{ mr: 1.5, ml: 0, alignItems: 'center' }}
+                                key={id}
+                                sx={{ mr: 1, ml: 0 }}
                                 control={
                                     <Checkbox
                                         size="small"
-                                        checked={batchQualities.has(quality)}
-                                        onChange={(e) => {
-                                            setBatchQualities((prev) => {
+                                        checked={batchTiers.has(id)}
+                                        onChange={(e: { target: { checked: boolean } }) =>
+                                            setBatchTiers((prev: Set<string>) => {
                                                 const next = new Set(prev);
-                                                if (e.target.checked) {
-                                                    next.add(quality);
-                                                } else {
-                                                    next.delete(quality);
-                                                }
+                                                e.target.checked ? next.add(id) : next.delete(id);
                                                 return next;
-                                            });
-                                        }}
+                                            })
+                                        }
                                     />
                                 }
                                 label={
-                                    <Typography variant="caption">
-                                        {quality === 'flac' ? 'FLAC' : `MP3 ${quality}`}
-                                    </Typography>
+                                    <Tooltip title={desc} placement="top">
+                                        <Typography variant="caption">{label}</Typography>
+                                    </Tooltip>
                                 }
                             />
                         ))}
-                        </FormGroup>
-                    </FormControl>
+                    </FormGroup>
                 </Box>
-                {batchMutation.isError && (
-                    <Typography variant="caption" color="error.main">
-                        {(batchMutation.error as Error)?.message ?? 'Batch scheduling failed'}
-                    </Typography>
-                )}
-                {batchMutation.data && (
-                    <Typography variant="caption" color="text.secondary">
-                        Queued {batchMutation.data.queued}/{batchMutation.data.requested}
-                    </Typography>
+
+                {/* Status feedback */}
+                {(batchMutation.isError || batchMutation.data) && (
+                    <>
+                        <Divider orientation="vertical" flexItem />
+                        <Box>
+                            {batchMutation.isError && (
+                                <Typography variant="caption" color="error.main">
+                                    {(batchMutation.error as Error)?.message ?? 'Batch scheduling failed'}
+                                </Typography>
+                            )}
+                            {batchMutation.data && (
+                                <Typography variant="caption" color="text.secondary">
+                                    Queued {batchMutation.data.queued}/{batchMutation.data.requested}
+                                </Typography>
+                            )}
+                        </Box>
+                    </>
                 )}
             </Box>
             {orderedTypes.map((type) => (
