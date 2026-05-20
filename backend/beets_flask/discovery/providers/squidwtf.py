@@ -45,9 +45,33 @@ def _strip_accents(value: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
+_QUALITY_ALIAS: dict[str, str] = {
+    "flac:hires": "27",
+    "flac:24": "27",
+    "flac:96": "7",
+    "flac:16": "6",
+    "flac:cd": "6",
+    "mp3:320": "5",
+    "mp3": "5",
+}
+
+
+def normalize_squidwtf_quality(quality: str) -> str:
+    """Map human-readable quality alias or raw numeric code to a Qobuz quality code.
+
+    Accepted named values: flac_hires (27), flac_24bit (27), flac_96 (7),
+    flac_cd / flac_16bit (6), mp3_320 / mp3 (5).
+    Raw numeric strings (27, 7, 6, 5) are returned unchanged.
+    """
+    q = str(quality or "").strip().lower()
+    if q in _QUALITY_ALIAS:
+        return _QUALITY_ALIAS[q]
+    return str(quality).strip() or "27"
+
+
 def _quality_to_ext(quality: str) -> str:
-    q = str(quality or "").strip().upper()
-    if q in {"5", "MP3", "MP3_320"}:
+    q = normalize_squidwtf_quality(str(quality or "")).strip()
+    if q == "5":
         return ".mp3"
     return ".flac"
 
@@ -243,7 +267,7 @@ async def download_album(
                 track_id = track.get("id")
                 if track_id is None:
                     continue
-                dl_url = f"{base_url.rstrip('/')}/api/download-music?track_id={quote(str(track_id))}&quality={quote(str(quality))}"
+                dl_url = f"{base_url.rstrip('/')}/api/download-music?track_id={quote(str(track_id))}&quality={quote(normalize_squidwtf_quality(str(quality)))}"
                 # Session cookie jar holds captcha_verified_at after _get_captcha_cookie;
                 # pass it explicitly as well for robustness.
                 dl_headers: dict[str, str] = {"Cookie": captcha_cookie} if captcha_cookie else {}
@@ -349,11 +373,11 @@ def _tag_file(
 
 
 def quality_label_to_display(quality: str) -> dict[str, Any]:
-    q = str(quality or "").strip().upper()
+    q = normalize_squidwtf_quality(quality)
     if q == "27":
         return {"container": "FLAC", "kbps": 2000}
     if q in {"7", "6"}:
         return {"container": "FLAC", "kbps": 1411}
-    if q in {"5", "MP3", "MP3_320"}:
+    if q == "5":
         return {"container": "MP3", "kbps": 320}
     return {"container": "FLAC", "kbps": None}

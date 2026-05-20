@@ -104,6 +104,7 @@ export async function getDownloadSuggestions(opts: {
     album: string;
     artist: string;
     provider?: 'deemix' | 'slskd' | 'squidwtf';
+    expected_track_count?: number | null;
     signal?: AbortSignal;
 }): Promise<DownloadSuggestionsResponse> {
     const controller = new AbortController();
@@ -123,6 +124,7 @@ export async function getDownloadSuggestions(opts: {
                 album: opts.album,
                 artist: opts.artist,
                 provider: opts.provider,
+                ...(opts.expected_track_count != null ? { expected_track_count: opts.expected_track_count } : {}),
             }),
             signal: controller.signal,
         });

@@ -204,13 +204,10 @@ def _deemix_settings() -> dict:
 
 def _slskd_settings() -> dict:
     base = ["gui", "discovery", "slskd"]
-    rank = ["gui", "discovery", "ranking"]
     return {
         "base_url": _cfg_str(base + ["base_url"]),
         "api_key": _cfg_str(base + ["api_key"]) or None,
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 40),
-        "ranking_mode": _cfg_str(rank + ["mode"], "balanced").casefold() or "balanced",
-        "min_bitrate_kbps": _cfg_int(rank + ["min_bitrate_kbps"], 192),
     }
 
 
@@ -219,7 +216,7 @@ def _squidwtf_settings() -> dict:
     return {
         "base_url": _cfg_str(base + ["base_url"], "https://qobuz.squid.wtf"),
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 45),
-        "quality": _cfg_str(base + ["quality"], "27") or "27",
+        "quality": _cfg_str(base + ["quality"], "flac_hires") or "flac_hires",
     }
 
 
@@ -262,21 +259,13 @@ def _quality_to_deemix_bitrate(quality: str) -> str:
 
 
 def _quality_to_squidwtf_quality(quality: str) -> str:
-    # squidwtf values: 27=FLAC Hi-Res, 7/6=FLAC CD, 5=MP3 320
-    if quality == "320":
+    # Convert internal quality labels (flac/320/128) then named/numeric aliases to squidwtf codes.
+    q = str(quality or "").strip().lower()
+    if q in {"320", "128", "mp3", "mp3_320"}:
         return "5"
-    if quality == "128":
-        return "5"
-    return "27"
+    # Delegate named and numeric aliases to squidwtf provider normalizer.
+    return squidwtf_provider.normalize_squidwtf_quality(quality)
 
-
-def _quality_to_slskd_min_bitrate(quality: str) -> int:
-    if quality == "128":
-        return 128
-    if quality == "320":
-        return 256
-    # For FLAC preference we still use bitrate as a fallback ranking hint.
-    return 320
 
 
 def _quality_rank(quality: str) -> int:
@@ -388,11 +377,6 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
                 base_url=scfg["base_url"],
                 api_key=scfg["api_key"],
                 timeout_seconds=scfg["timeout_seconds"],
-                ranking_mode=scfg["ranking_mode"],
-                min_bitrate_kbps=max(
-                    scfg["min_bitrate_kbps"],
-                    _quality_to_slskd_min_bitrate(quality),
-                ),
                 selected_candidate=selected_candidate if isinstance(selected_candidate, dict) else None,
             )
         )
@@ -562,24 +546,13 @@ async def _find_best_match_across_providers(
                         log.debug("slskd search failed: %s", exc)
                     
                     if candidates:
-                        ranked = slskd_provider.rank_candidates(
-                            candidates,
-                            ranking_mode=scfg["ranking_mode"],
-                            min_bitrate_kbps=max(
-                                scfg["min_bitrate_kbps"],
-                                _quality_to_slskd_min_bitrate(quality),
-                            ),
-                        )
+                        ranked = slskd_provider.rank_candidates(candidates, album_hint=album)
                         if ranked:
                             best_candidate = ranked[0]
                             score = float(slskd_provider.score_candidate(
                                 best_candidate,
-                                ranking_mode=scfg["ranking_mode"],
-                                min_bitrate_kbps=max(
-                                    scfg["min_bitrate_kbps"],
-                                    _quality_to_slskd_min_bitrate(quality),
-                                ),
-                            )) / 100.0  # Normalize to 0-1 range
+                                album_hint=album,
+                            ))
                             
                             payload = dict(album_payload)
                             payload.update({
@@ -791,6 +764,13 @@ async def download_options():
     artist = str(data.get("artist", "")).strip()
     album = str(data.get("album", "")).strip()
     provider_filter = str(data.get("provider", "")).strip().casefold()
+    expected_track_count: int | None = None
+    try:
+        _etc = data.get("expected_track_count")
+        if _etc is not None:
+            expected_track_count = int(_etc)
+    except (TypeError, ValueError):
+        pass
     if not artist and not album:
         return jsonify({"error": "artist or album required"}), 400
     if provider_filter and provider_filter not in ("deemix", "slskd", "squidwtf"):
@@ -886,19 +866,11 @@ async def download_options():
         if not candidates and last_exc is not None:
             raise last_exc
 
-        ranked = slskd_provider.rank_candidates(
-            candidates,
-            ranking_mode=scfg["ranking_mode"],
-            min_bitrate_kbps=scfg["min_bitrate_kbps"],
-        )
+        ranked = slskd_provider.rank_candidates(candidates, album_hint=album, expected_track_count=expected_track_count)
         log.info("slskd: %d candidates ranked", len(ranked))
         options = []
         for candidate in ranked[:20]:
-            score = float(slskd_provider.score_candidate(
-                candidate,
-                ranking_mode=scfg["ranking_mode"],
-                min_bitrate_kbps=scfg["min_bitrate_kbps"],
-            ))
+            score = float(slskd_provider.score_candidate(candidate, album_hint=album, expected_track_count=expected_track_count))
             folder = candidate.get("folder", "")
             folder_name = folder.rsplit("/", 1)[-1] if folder else album
             file_count = len(candidate.get("files") or [])
@@ -1076,11 +1048,7 @@ async def slskd_search():
         album=album,
         timeout_seconds=scfg["timeout_seconds"],
     )
-    ranked = slskd_provider.rank_candidates(
-        candidates,
-        ranking_mode=scfg["ranking_mode"],
-        min_bitrate_kbps=scfg["min_bitrate_kbps"],
-    )
+    ranked = slskd_provider.rank_candidates(candidates, album_hint=album)
     return jsonify({"total": len(ranked), "results": ranked[:50]})
 
 
@@ -1108,8 +1076,6 @@ async def slskd_queue_best():
             base_url=scfg["base_url"],
             api_key=scfg["api_key"],
             timeout_seconds=scfg["timeout_seconds"],
-            ranking_mode=scfg["ranking_mode"],
-            min_bitrate_kbps=scfg["min_bitrate_kbps"],
         )
     )
     return jsonify(job), 202

@@ -22,11 +22,11 @@ import {
     Typography,
     useTheme,
 } from '@mui/material';
-import { UserRoundMinusIcon, UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon } from 'lucide-react';
+import { UserRoundMinusIcon, UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon, RefreshCw } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 
-import { Artist, artistsQueryOptions } from '@/api/library';
+import { Artist, artistsQueryOptions, fetchMissingAlbumsByArtist, missingAlbumsByArtistQueryOptions } from '@/api/library';
 import {
     ArtistSearchResult,
     FollowedArtist,
@@ -284,6 +284,26 @@ function ArtistsListWrapper({
         bulkUnfollowMutation.mutate(selectedToUnfollow);
     };
 
+    const bulkRefreshMissingMutation = useMutation({
+        mutationFn: async (names: string[]) => {
+            await Promise.allSettled(
+                names.map(async (name) => {
+                    const fresh = await fetchMissingAlbumsByArtist(name, true);
+                    queryClient.setQueryData(missingAlbumsByArtistQueryOptions(name).queryKey, fresh);
+                })
+            );
+        },
+        onSettled: () => {
+            void queryClient.invalidateQueries({ queryKey: ['artists'] });
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+    });
+
+    const handleRefreshMissingSelected = () => {
+        if (selected.size === 0) return;
+        bulkRefreshMissingMutation.mutate([...selected]);
+    };
+
     return (
         <Box {...props}>
             <Box
@@ -364,6 +384,23 @@ function ArtistsListWrapper({
                 >
                     Unfollow Selected ({selectedToUnfollow.length})
                 </Button>
+                <Tooltip title="Recompute missing albums from MusicBrainz & Deezer for selected artists">
+                    <span>
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={handleRefreshMissingSelected}
+                            disabled={selected.size === 0 || bulkRefreshMissingMutation.isPending}
+                            startIcon={
+                                bulkRefreshMissingMutation.isPending
+                                    ? <CircularProgress size={14} />
+                                    : <RefreshCw size={14} />
+                            }
+                        >
+                            Refresh Missing ({selected.size})
+                        </Button>
+                    </span>
+                </Tooltip>
                 <Typography
                     variant="caption"
                     color="text.secondary"

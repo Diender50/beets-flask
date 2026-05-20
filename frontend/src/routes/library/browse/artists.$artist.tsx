@@ -20,8 +20,6 @@ import {
     IconButton,
     InputLabel,
     List as MuiList,
-    ListItemButton,
-    ListItemText,
     MenuItem,
     Select,
     Table,
@@ -35,7 +33,7 @@ import {
     Typography,
     useTheme,
 } from '@mui/material';
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, ExternalLinkIcon, RefreshCw, XCircleIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, RefreshCw, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
@@ -828,16 +826,26 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         ? album.mb_releasegroupid.slice(7)
         : undefined;
     const releaseId = !deezerId ? (album.mb_releasegroupid ?? undefined) : undefined;
+    const tracklistReleaseId = album.mb_releasegroupid ?? (deezerId ? `deezer:${deezerId}` : undefined);
     const expectedTrackCount = useExpectedTrackCount(album);
     const [jobId, setJobId] = useState<string | null>(null);
     const [open, setOpen] = useState(false);
+    const { data: expectedTracks = [] } = useQuery({
+        ...missingAlbumTracksQueryOptions(tracklistReleaseId ?? ''),
+        enabled: open && !!tracklistReleaseId,
+    });
     const [searchCycle, setSearchCycle] = useState(0);
+    const [expandedChoiceKey, setExpandedChoiceKey] = useState<string | null>(null);
     const [suggestionChoices, setSuggestionChoices] = useState<DownloadSuggestion[]>([]);
     const [slskdLoading, setSlskdLoading] = useState(false);
     const [deemixLoading, setDeemixLoading] = useState(false);
     const [squidwtfLoading, setSquidwtfLoading] = useState(false);
     const [suggestionErrors, setSuggestionErrors] = useState<string[]>([]);
     const [errorProviders, setErrorProviders] = useState<Set<string>>(new Set());
+    const [providerResultCount, setProviderResultCount] = useState<Partial<Record<string, number>>>({});
+    const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
+    const [selectedQualities, setSelectedQualities] = useState<Set<string>>(new Set(['FLAC']));
+    const [retryTrigger, setRetryTrigger] = useState<{ provider: 'slskd' | 'deemix' | 'squidwtf'; cycle: number } | null>(null);
     const searchAbortRef = useRef<AbortController[] | null>(null);
 
     const cleanupSlskdSearchesForDialog = () => {
@@ -884,6 +892,9 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         setSuggestionChoices([]);
         setSuggestionErrors([]);
         setErrorProviders(new Set());
+        setProviderResultCount({});
+        setHiddenProviders(new Set());
+        setSelectedQualities(new Set(['FLAC']));
         setSlskdLoading(true);
         setDeemixLoading(true);
         setSquidwtfLoading(true);
@@ -915,8 +926,10 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     album: album.album,
                     provider,
                     signal,
+                    expected_track_count: expectedTrackCount ?? undefined,
                 });
                 mergeChoices(data.results ?? []);
+                if (!cancelled) setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, [provider]: data.results?.length ?? 0 }));
             } catch (err) {
                 // Abort on popup close (or Strict Mode cleanup) should be silent.
                 if (err instanceof DOMException && err.name === 'AbortError') {
@@ -946,8 +959,74 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         };
     }, [open, searchCycle, artist, album.album]);
 
+    // Retry a single provider (0-result re-search)
+    useEffect(() => {
+        if (!retryTrigger || !open) return;
+        const { provider } = retryTrigger;
+        const ctrl = new AbortController();
+        let cancelled = false;
+
+        const setLoading = provider === 'slskd' ? setSlskdLoading : provider === 'deemix' ? setDeemixLoading : setSquidwtfLoading;
+        setSuggestionChoices((prev) => prev.filter((c) => c.provider !== provider));
+        setProviderResultCount((prev: Partial<Record<string, number>>) => { const n = { ...prev }; delete n[provider]; return n; });
+        setErrorProviders((prev) => { const n = new Set(prev); n.delete(provider); return n; });
+        setSuggestionErrors((prev) => prev.filter((e) => !e.startsWith(`${provider}:`)));
+        setLoading(true);
+
+        const run = async () => {
+            try {
+                const data = await getDownloadSuggestions({ artist, album: album.album, provider, signal: ctrl.signal, expected_track_count: expectedTrackCount ?? undefined });
+                if (!cancelled) {
+                    setSuggestionChoices((prev) => {
+                        const merged = [...prev, ...(data.results ?? [])];
+                        const seen = new Set<string>();
+                        return merged.filter((c) => {
+                            const k = `${c.provider}:${String(c.details.deezer_id ?? '')}:${String(c.details.folder ?? '')}:${c.title}`;
+                            if (seen.has(k)) return false;
+                            seen.add(k);
+                            return true;
+                        }).sort((a, b) => b.score - a.score);
+                    });
+                    setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, [provider]: data.results?.length ?? 0 }));
+                }
+            } catch (err) {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                if (!cancelled) {
+                    setSuggestionErrors((prev) => [...prev, `${provider}: ${(err as Error)?.message ?? 'request failed'}`]);
+                    setErrorProviders((prev) => new Set([...prev, provider]));
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
+        void run();
+        return () => { cancelled = true; ctrl.abort(); };
+    }, [retryTrigger, open, artist, album.album]);
+
     const suggestionLoading = slskdLoading || deemixLoading || squidwtfLoading;
     const suggestionError = suggestionErrors.join(' | ');
+
+    const availableQualities = useMemo(() => {
+        const set = new Set<string>();
+        for (const c of suggestionChoices) {
+            const q = c.provider === 'slskd'
+                ? String(c.details.extension ?? '').toUpperCase().replace('.', '')
+                : String(c.details.container ?? '').toUpperCase();
+            if (q) set.add(q);
+        }
+        return [...set].sort();
+    }, [suggestionChoices]);
+
+    const visibleChoices = useMemo(() => suggestionChoices.filter((c) => {
+        if (hiddenProviders.has(c.provider)) return false;
+        if (selectedQualities.size > 0) {
+            const q = c.provider === 'slskd'
+                ? String(c.details.extension ?? '').toUpperCase().replace('.', '')
+                : String(c.details.container ?? '').toUpperCase();
+            if (!selectedQualities.has(q)) return false;
+        }
+        return true;
+    }), [suggestionChoices, hiddenProviders, selectedQualities]);
 
     const mutation = useMutation({
         mutationFn: async (choice: DownloadSuggestion) => {
@@ -1090,25 +1169,29 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     </Button>
                 </span>
             </Tooltip>
-            <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="md">
+            <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="xs">
                 <DialogTitle>Choose download result</DialogTitle>
                 <DialogContent dividers>
-                    <Box sx={{ display: 'flex', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+                    <Box sx={{ display: 'flex', gap: 1, mb: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
                         {(
                             [
-                                { key: 'slskd', loading: slskdLoading },
-                                { key: 'deemix', loading: deemixLoading },
-                                { key: 'squidwtf', loading: squidwtfLoading },
-                            ] as const
+                                { key: 'slskd' as const, loading: slskdLoading },
+                                { key: 'deemix' as const, loading: deemixLoading },
+                                { key: 'squidwtf' as const, loading: squidwtfLoading },
+                            ]
                         ).map(({ key, loading }) => {
                             const hasError = errorProviders.has(key);
+                            const count = providerResultCount[key];
+                            const isDone = !loading && !hasError && count !== undefined;
+                            const hasResults = isDone && count > 0;
+                            const isHidden = hiddenProviders.has(key);
                             return (
                                 <Chip
                                     key={key}
                                     label={key}
                                     size="small"
-                                    variant={loading ? 'outlined' : 'filled'}
-                                    color={loading ? 'default' : hasError ? 'error' : 'success'}
+                                    variant={loading || isHidden ? 'outlined' : 'filled'}
+                                    color={loading ? 'default' : hasError ? 'error' : isHidden ? 'default' : key === 'deemix' ? 'primary' : key === 'squidwtf' ? 'success' : 'secondary'}
                                     icon={
                                         loading ? (
                                             <CircularProgress size={12} sx={{ ml: '6px !important' }} />
@@ -1118,9 +1201,42 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                             <CheckIcon size={12} />
                                         )
                                     }
+                                    onClick={isDone && !hasError ? () => {
+                                        if (hasResults) {
+                                            setHiddenProviders((prev: Set<string>) => {
+                                                const next = new Set(prev);
+                                                if (next.has(key)) next.delete(key); else next.add(key);
+                                                return next;
+                                            });
+                                        } else {
+                                            setRetryTrigger({ provider: key, cycle: Date.now() });
+                                        }
+                                    } : undefined}
+                                    sx={{ cursor: isDone && !hasError ? 'pointer' : 'default' }}
                                 />
                             );
                         })}
+                        <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
+                            {availableQualities.map((q: string) => {
+                                const selected = selectedQualities.has(q);
+                                const qColor = q === 'FLAC' ? 'info' : q === 'MP3' ? 'warning' : 'default';
+                                return (
+                                <Chip
+                                    key={q}
+                                    label={q}
+                                    size="small"
+                                    variant={selected ? 'filled' : 'outlined'}
+                                    color={selected ? qColor : 'default'}
+                                    onClick={() => setSelectedQualities((prev: Set<string>) => {
+                                        const next = new Set(prev);
+                                        if (next.has(q)) next.delete(q); else next.add(q);
+                                        return next;
+                                    })}
+                                    sx={{ cursor: 'pointer', opacity: selected ? 1 : 0.5 }}
+                                />
+                                );
+                            })}
+                        </Box>
                     </Box>
                     {suggestionLoading && suggestionChoices.length === 0 ? (
                         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -1129,7 +1245,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                     ) : suggestionChoices.length > 0 ? (
                         <>
                         <MuiList disablePadding>
-                            {suggestionChoices.map((choice, index) => (
+                            {visibleChoices.map((choice: DownloadSuggestion, index: number) => (
                                 (() => {
                                     const resultTrackCount = choice.provider === 'deemix'
                                         ? asNumber(choice.details.trackCount)
@@ -1156,89 +1272,181 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                                         : choice.provider === 'squidwtf'
                                             ? asNumber(choice.details.kbps)
                                         : meanAudioBitrateKbps;
+                                    const isSlskd = choice.provider === 'slskd';
+                                    const bitDepth = isSlskd ? asNumber(choice.details.bitDepth) : null;
+                                    const qualityLabel = (() => {
+                                        if (container === '-') return container;
+                                        if (container === 'FLAC') {
+                                            if (bitDepth !== null && bitDepth > 0)
+                                                return bitDepth >= 20 ? 'FLAC-24' : 'FLAC-16';
+                                            if (choice.provider === 'deemix') return 'FLAC-16';
+                                            if (kbps !== null) return kbps > 1500 ? 'FLAC-24' : 'FLAC-16';
+                                            return 'FLAC';
+                                        }
+                                        if (kbps !== null && kbps > 0) {
+                                            const steps = [8,16,24,32,40,48,56,64,80,96,112,128,160,192,224,256,320];
+                                            const nearest = steps.reduce((a, b) => Math.abs(b - kbps) < Math.abs(a - kbps) ? b : a);
+                                            return `${container}-${nearest}`;
+                                        }
+                                        return container;
+                                    })();
                                     const trackColor = trackMatchColor(resultTrackCount, expectedTrackCount);
                                     const speedColor = speedMatchColor(uploadSpeed, queueLength, hasFreeUploadSlot);
                                     const queueColor = queueMatchColor(queueLength);
+                                    const choiceKey = `${choice.provider}-${choice.title}-${index}`;
+                                    const isExpanded = isSlskd && expandedChoiceKey === choiceKey;
+                                    const audioExts = new Set(['flac', 'mp3', 'm4a', 'ogg', 'aac', 'wav', 'aiff', 'opus', 'wma']);
+                                    const slskdAudioFiles = isSlskd
+                                        ? (((choice.details.candidate as Record<string, unknown>)?.files as Array<Record<string, unknown>> | undefined) ?? [])
+                                            .filter(f => audioExts.has(String(f.extension ?? '').toLowerCase().replace('.', '')))
+                                        : [];
+                                    const providerColor = choice.provider === 'deemix' ? 'primary.main' : choice.provider === 'squidwtf' ? 'success.main' : 'secondary.main';
                                     return (
-                                <ListItemButton
-                                    key={`${choice.provider}-${choice.title}-${index}`}
-                                    onClick={() => mutation.mutate(choice)}
-                                    disabled={mutation.isPending}
+                                <Box
+                                    key={choiceKey}
                                     sx={{
+                                        mb: 0.75,
                                         borderRadius: 1,
-                                        mb: 1,
                                         border: 1,
-                                        borderColor: 'divider',
-                                        alignItems: 'flex-start',
+                                        borderColor: isExpanded ? 'primary.main' : 'divider',
+                                        overflow: 'hidden',
+                                        '&:hover': { borderColor: isExpanded ? 'primary.main' : 'action.selected' },
+                                        transition: 'border-color 0.15s',
                                     }}
                                 >
-                                    <ListItemText
-                                        primary={
-                                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                                                <Typography variant="body2" fontWeight={700}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1 }}>
+                                        {/* Provider accent dot */}
+                                        <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: providerColor, flexShrink: 0 }} />
+
+                                        {/* Main info */}
+                                        <Box
+                                            sx={{ flex: 1, minWidth: 0, cursor: isSlskd ? 'pointer' : 'default' }}
+                                            onClick={isSlskd ? () => setExpandedChoiceKey(isExpanded ? null : choiceKey) : undefined}
+                                        >
+                                            <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75, mb: 0.25 }}>
+                                                <Typography variant="body2" fontWeight={600} noWrap sx={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                                     {choice.title}
                                                 </Typography>
-                                                <Chip
-                                                    size="small"
-                                                    label={choice.provider}
-                                                    color={choice.provider === 'deemix' ? 'primary' : choice.provider === 'squidwtf' ? 'success' : 'secondary'}
-                                                />
-                                                <Chip size="small" label={`score ${choice.score.toFixed(3)}`} variant="outlined" />
-                                            </Box>
-                                        }
-                                        secondary={
-                                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.5 }}>
-                                                <Typography variant="caption" color="text.secondary">
-                                                    {choice.artist}
+                                                <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0 }}>
+                                                    {choice.provider}
                                                 </Typography>
-                                                {choice.provider === 'deemix' ? (
-                                                    <>
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            Deezer ID: {String(choice.details.deezer_id ?? '-')}
-                                                        </Typography>
-                                                        <Typography variant="caption" sx={{ color: trackColor }}>
-                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
-                                                            {container !== '-' ? ` • ${container}` : ''}
-                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
-                                                        </Typography>
-                                                    </>
-                                                ) : choice.provider === 'squidwtf' ? (
-                                                    <>
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            Squid album ID: {String(choice.details.squid_album_id ?? '-')}
-                                                        </Typography>
-                                                        <Typography variant="caption" sx={{ color: trackColor }}>
-                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
-                                                            {container !== '-' ? ` • ${container}` : ''}
-                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
-                                                        </Typography>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            <Box component="span">
-                                                                User: {String(choice.details.username ?? '-')}
-                                                            </Box>
-                                                            {' • '}
-                                                            <Box component="span" sx={{ color: speedColor }}>
-                                                                Speed: {uploadSpeed !== null ? `${(uploadSpeed / 1_000_000).toFixed(1)} MB/s` : '-'}
-                                                            </Box>
-                                                            {' • '}
-                                                            <Box component="span" sx={{ color: queueColor }}>
-                                                                Queue: {queueLength ?? '-'}
-                                                            </Box>
-                                                        </Typography>
-                                                        <Typography variant="caption" sx={{ color: trackColor }}>
-                                                            Tracks: {resultTrackCount ?? '-'} / {expectedTrackCount ?? '-'}
-                                                            {container !== '-' ? ` • ${container}` : ''}
-                                                            {kbps !== null ? ` • ${Math.round(kbps)} kbps` : ''}
-                                                        </Typography>
-                                                    </>
+                                            </Box>
+                                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                <Typography variant="caption" sx={{ color: trackColor }}>
+                                                    {resultTrackCount ?? '?'}/{expectedTrackCount ?? '?'}
+                                                </Typography>
+                                                {container !== '-' && (
+                                                    <Box
+                                                        component="span"
+                                                        sx={{
+                                                            fontSize: '0.58rem',
+                                                            fontWeight: 700,
+                                                            px: 0.5,
+                                                            py: 0.1,
+                                                            borderRadius: 0.5,
+                                                            lineHeight: 1.5,
+                                                            flexShrink: 0,
+                                                            backgroundColor:
+                                                                container === 'FLAC' ? 'info.main' :
+                                                                container === 'MP3'  ? 'warning.main' :
+                                                                'action.selected',
+                                                            color:
+                                                                container === 'FLAC' ? 'info.contrastText' :
+                                                                container === 'MP3'  ? 'warning.contrastText' :
+                                                                'text.secondary',
+                                                        }}
+                                                    >
+                                                        {qualityLabel}
+                                                    </Box>
+                                                )}
+                                                {isSlskd && uploadSpeed !== null && (
+                                                    <Typography variant="caption" sx={{ color: speedColor }}>
+                                                        {(uploadSpeed / 1_000_000).toFixed(1)} MB/s
+                                                    </Typography>
+                                                )}
+                                                {isSlskd && queueLength !== null && (
+                                                    <Typography variant="caption" sx={{ color: queueColor }}>
+                                                        Q:{queueLength}
+                                                    </Typography>
                                                 )}
                                             </Box>
-                                        }
-                                    />
-                                </ListItemButton>
+                                        </Box>
+
+                                        {/* Score + actions */}
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
+                                            <Typography variant="caption" sx={{
+                                                fontSize: '0.65rem',
+                                                fontWeight: 600,
+                                                minWidth: 28,
+                                                textAlign: 'right',
+                                                color: choice.score > 0.9 ? 'success.main' : choice.score > 0.6 ? 'warning.main' : 'error.main',
+                                            }}>
+                                                {choice.score.toFixed(2)}
+                                            </Typography>
+                                            {isSlskd && (
+                                                <IconButton size="small" onClick={() => setExpandedChoiceKey(isExpanded ? null : choiceKey)} sx={{ p: 0.25 }}>
+                                                    {isExpanded ? <ChevronDownIcon size={14} /> : <ChevronRightIcon size={14} />}
+                                                </IconButton>
+                                            )}
+                                            <IconButton
+                                                onClick={() => mutation.mutate(choice)}
+                                                disabled={mutation.isPending}
+                                                color="primary"
+                                                sx={{ p: 0.75 }}
+                                            >
+                                                {mutation.isPending ? <CircularProgress size={18} /> : <DownloadIcon size={18} />}
+                                            </IconButton>
+                                        </Box>
+                                    </Box>
+
+                                    {/* slskd expanded: 2-column tracklist */}
+                                    {isExpanded && (
+                                        <Box sx={{ borderTop: 1, borderColor: 'divider' }}>
+                                            {/* Fixed column headers — outside scroll area */}
+                                            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: 1, borderColor: 'divider', px: 1.5, py: 0.5, backgroundColor: 'action.hover' }}>
+                                                <Typography variant="caption" fontWeight={700} color="text.disabled" sx={{ textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.6rem' }}>
+                                                    Expected · {expectedTracks.length || expectedTrackCount || '?'}
+                                                </Typography>
+                                                <Typography variant="caption" fontWeight={700} color="text.disabled" sx={{ textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.6rem' }}>
+                                                    Soulseek · {slskdAudioFiles.length}
+                                                </Typography>
+                                            </Box>
+                                            {/* Scrollable track rows */}
+                                            <Box sx={{ overflowY: 'auto', maxHeight: 220 }}>
+                                            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+                                            <Box sx={{ borderRight: 1, borderColor: 'divider', px: 1.5, py: 0.75 }}>
+                                                {expectedTracks.length > 0 ? expectedTracks.map((t: { title: string; track_position?: number }, ti: number) => (
+                                                    <Box key={ti} sx={{ display: 'flex', gap: 0.75, lineHeight: 1.8 }}>
+                                                        <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, minWidth: 18, textAlign: 'right' }}>
+                                                            {(t.track_position ?? ti + 1)}
+                                                        </Typography>
+                                                        <Typography variant="caption" noWrap>{t.title}</Typography>
+                                                    </Box>
+                                                )) : (
+                                                    <Typography variant="caption" color="text.disabled">No data</Typography>
+                                                )}
+                                            </Box>
+                                            <Box sx={{ px: 1.5, py: 0.75 }}>
+                                                {/* placeholder — content below */}
+                                                {slskdAudioFiles.map((f, fi) => {
+                                                    const fname = String(f.filename ?? '');
+                                                    const base = fname.replace(/\\/g, '/').split('/').pop() ?? fname;
+                                                    const nameClean = base.replace(/\.[^.]+$/, '').replace(/^\d{1,3}[\s.\-_]+/, '');
+                                                    return (
+                                                        <Box key={fi} sx={{ display: 'flex', gap: 0.75, lineHeight: 1.8 }}>
+                                                            <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, minWidth: 18, textAlign: 'right' }}>
+                                                                {fi + 1}
+                                                            </Typography>
+                                                            <Typography variant="caption" noWrap>{nameClean}</Typography>
+                                                        </Box>
+                                                    );
+                                                })}
+                                            </Box>
+                                            </Box>
+                                        </Box>
+                                        </Box>
+                                    )}
+                                </Box>
                                     );
                                 })()
                             ))}
@@ -1574,15 +1782,12 @@ function MissingAlbumsViewer({
                     })()}
                     <Table size="small" sx={{ tableLayout: 'fixed', width: '100%' }}>
                         <TableHead>
-                            <TableRow>
-                                <TableCell sx={{ width: 44, py: 0.75 }}>
-                                </TableCell>
-                                <TableCell sx={{ width: 44 }} />
-                                <TableCell sx={{ pl: 1.5 }}>Album</TableCell>
-                                <TableCell sx={{ width: 72 }} align="right">Tracks</TableCell>
-                                <TableCell sx={{ width: 72 }} align="left">Year</TableCell>
-                                <TableCell sx={{ width: 52 }} />
-                                <TableCell sx={{ width: 104, textAlign: 'center' }}>Download</TableCell>
+                            <TableRow sx={{ '& .MuiTableCell-root': { py: 0.5, borderBottom: 1, borderColor: 'divider', color: 'text.disabled', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.04em' } }}>
+                                <TableCell sx={{ width: 40 }} />
+                                <TableCell sx={{ width: 40 }} />
+                                <TableCell sx={{ pl: 1 }}>Album</TableCell>
+                                <TableCell sx={{ width: 68 }} />
+                                <TableCell sx={{ width: 92, textAlign: 'center' }}>Download</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
@@ -1617,108 +1822,88 @@ function MissingAlbumsViewer({
                                                 setExpandedId(isExpanded ? null : rowId);
                                             }}
                                         >
-                                            <TableCell
-                                                sx={{ p: 0.5 }}
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
+                                            {/* Checkbox */}
+                                            <TableCell sx={{ p: 0.5, width: 40 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
                                                 <Checkbox
                                                     size="small"
                                                     checked={isSelected}
                                                     onChange={() => {
                                                         setSelectedIds((prev) => {
                                                             const next = new Set(prev);
-                                                            if (next.has(rowId)) {
-                                                                next.delete(rowId);
-                                                            } else {
-                                                                next.add(rowId);
-                                                            }
+                                                            if (next.has(rowId)) next.delete(rowId);
+                                                            else next.add(rowId);
                                                             return next;
                                                         });
                                                     }}
                                                 />
                                             </TableCell>
-                                            <TableCell sx={{ p: 0.5, width: 44 }}>
+
+                                            {/* Cover */}
+                                            <TableCell sx={{ p: 0.5, width: 40 }}>
                                                 {album.cover_url ? (
-                                                    <Box
-                                                        component="img"
-                                                        src={album.cover_url}
-                                                        alt={album.album}
-                                                        sx={{
-                                                            width: 36,
-                                                            height: 36,
-                                                            objectFit: 'cover',
-                                                            borderRadius: 0.5,
-                                                            display: 'block',
-                                                        }}
+                                                    <Box component="img" src={album.cover_url} alt={album.album}
+                                                        sx={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 0.5, display: 'block' }}
                                                         loading="lazy"
                                                     />
                                                 ) : (
-                                                    <Box
-                                                        sx={{
-                                                            width: 36,
-                                                            height: 36,
-                                                            borderRadius: 0.5,
-                                                            backgroundColor: 'action.hover',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center',
-                                                        }}
-                                                    >
-                                                        <AlbumIcon size={20} />
+                                                    <Box sx={{ width: 32, height: 32, borderRadius: 0.5, backgroundColor: 'action.hover', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                        <AlbumIcon size={16} />
                                                     </Box>
                                                 )}
                                             </TableCell>
-                                            <TableCell sx={{ pl: 1.5 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+
+                                            {/* Album name + year/tracks inline */}
+                                            <TableCell sx={{ pl: 1, py: 0.75 }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.2 }}>
                                                     {album.mb_releasegroupid && (
-                                                        isExpanded
-                                                            ? <ChevronDownIcon size={14} />
-                                                            : <ChevronRightIcon size={14} />
+                                                        isExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />
                                                     )}
-                                                    {album.album}
+                                                    <Typography variant="body2" fontWeight={600} sx={{ lineHeight: 1.3 }}>
+                                                        {album.album}
+                                                    </Typography>
+                                                </Box>
+                                                <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', pl: album.mb_releasegroupid ? 2.5 : 0 }}>
+                                                    <Typography variant="caption" color="text.disabled" component="span">
+                                                        <MissingAlbumTrackCount album={album} /> tracks
+                                                    </Typography>
+                                                    {album.year && (
+                                                        <Typography variant="caption" color="text.disabled">· {album.year}</Typography>
+                                                    )}
                                                 </Box>
                                             </TableCell>
-                                            <TableCell align="right" sx={{ width: 72, color: 'text.secondary' }}>
-                                                <MissingAlbumTrackCount album={album} />
-                                            </TableCell>
-                                            <TableCell sx={{ width: 72 }}>{album.year ?? '-'}</TableCell>
-                                            <TableCell sx={{ p: 0.5, width: mbUrl && deezerUrl ? 88 : 52 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
-                                                <Box sx={{ display: 'flex' }}>
+
+                                            {/* External links with brand icons */}
+                                            <TableCell sx={{ p: 0.5, width: 68 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
+                                                <Box sx={{ display: 'flex', gap: 0.25 }}>
                                                     {mbUrl && (
                                                         <Tooltip title="Open on MusicBrainz">
-                                                            <IconButton
-                                                                size="small"
-                                                                component="a"
-                                                                href={mbUrl}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                            >
-                                                                <ExternalLinkIcon size={16} />
+                                                            <IconButton size="small" component="a" href={mbUrl} target="_blank" rel="noopener noreferrer" sx={{ p: 0.5 }}>
+                                                                <svg role="img" viewBox="0 0 24 24" width={16} height={16} xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+                                                                    <path d="M11.582 0L1.418 5.832v12.336L11.582 24V10.01L7.1 12.668v3.664c.01.111.01.225 0 .336-.103.435-.54.804-1 1.111-.802.537-1.752.509-2.166-.111-.413-.62-.141-1.631.666-2.168.384-.28.863-.399 1.334-.332V6.619c0-.154.134-.252.226-.308L11.582 3zm.836 0v6.162c.574.03 1.14.16 1.668.387a2.225 2.225 0 0 0 1.656-.717 1.02 1.02 0 1 1 1.832-.803l.004.006a1.022 1.022 0 0 1-1.295 1.197c-.34.403-.792.698-1.297.85.34.263.641.576.891.928a1.04 1.04 0 0 1 .777.125c.768.486.568 1.657-.318 1.857-.886.2-1.574-.77-1.09-1.539.02-.03.042-.06.065-.09a3.598 3.598 0 0 0-1.436-1.166 4.142 4.142 0 0 0-1.457-.369v4.01c.855.06 1.256.493 1.555.834.227.256.356.39.578.402.323.018.568.008.806 0a5.44 5.44 0 0 1 .895.022c.94-.017 1.272-.226 1.605-.446a2.533 2.533 0 0 1 1.131-.463 1.027 1.027 0 0 1 .12-.263 1.04 1.04 0 0 1 .105-.137c.023-.025.047-.044.07-.066a4.775 4.775 0 0 1 0-2.405l-.012-.01a1.02 1.02 0 1 1 .692.272h-.057a4.288 4.288 0 0 0 0 1.877h.063a1.02 1.02 0 1 1-.545 1.883l-.047-.033a1 1 0 0 1-.352-.442 1.885 1.885 0 0 0-.814.354 3.03 3.03 0 0 1-.703.365c.757.555 1.772 1.6 2.199 2.299a1.03 1.03 0 0 1 .256-.033 1.02 1.02 0 1 1-.545 1.88l-.047-.03a1.017 1.017 0 0 1-.27-1.376.72.72 0 0 1 .051-.072c-.445-.775-2.026-2.28-2.46-2.387a4.037 4.037 0 0 0-1.31-.117c-.24.008-.513.018-.866 0-.515-.027-.783-.333-1.043-.629-.26-.296-.51-.56-1.055-.611V18.5a1.877 1.877 0 0 0 .426-.135.333.333 0 0 1 .058-.027c.56-.267 1.421-.91 2.096-2.447a1.02 1.02 0 0 1-.27-1.344 1.02 1.02 0 1 1 .915 1.54 6.273 6.273 0 0 1-1.432 2.136 1.785 1.785 0 0 1 .691.306.667.667 0 0 0 .37.168 3.31 3.31 0 0 0 .888-.222 1.02 1.02 0 0 1 1.787-.79v-.005a1.02 1.02 0 0 1-.773 1.683 1.022 1.022 0 0 1-.719-.287 3.935 3.935 0 0 1-1.168.287h-.05a1.313 1.313 0 0 1-.71-.275c-.262-.177-.51-.345-1.402-.12a2.098 2.098 0 0 1-.707.2V24l10.164-5.832V5.832zm4.154 4.904a.352.352 0 0 0-.197.639l.018.01c.163.1.378.053.484-.108v-.002a.352.352 0 0 0-.303-.539zm-4.99 1.928L7.082 9.5v2l4.5-2.668zm8.385.38a.352.352 0 0 0-.295.165v.002a.35.35 0 0 0 .096.473l.013.01a.357.357 0 0 0 .487-.108.352.352 0 0 0-.301-.541zM16.09 8.647a.352.352 0 0 0-.277.163.355.355 0 0 0 .296.54c.482 0 .463-.73-.02-.703zm3.877 2.477a.352.352 0 0 0-.295.164.35.35 0 0 0 .094.475l.015.01a.357.357 0 0 0 .485-.11.352.352 0 0 0-.3-.539zm-4.375 3.594a.352.352 0 0 0-.291.172.35.35 0 0 0-.04.265.352.352 0 1 0 .33-.437zm4.375.789a.352.352 0 0 0-.295.164v.002a.352.352 0 0 0 .094.473l.015.01a.357.357 0 0 0 .485-.108.352.352 0 0 0-.3-.54zm-2.803 2.488v.002a.347.347 0 0 0-.223.084.352.352 0 0 0 .23.62.347.347 0 0 0 .23-.085.348.348 0 0 0 .12-.24.353.353 0 0 0-.35-.38.347.347 0 0 0-.007 0Z"/>
+                                                                </svg>
                                                             </IconButton>
                                                         </Tooltip>
                                                     )}
                                                     {deezerUrl && (
                                                         <Tooltip title="Open on Deezer">
-                                                            <IconButton
-                                                                size="small"
-                                                                component="a"
-                                                                href={deezerUrl}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                            >
-                                                                <ExternalLinkIcon size={16} />
+                                                            <IconButton size="small" component="a" href={deezerUrl} target="_blank" rel="noopener noreferrer" sx={{ p: 0.5 }}>
+                                                                <svg role="img" viewBox="0 0 24 24" width={16} height={16} xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+                                                                    <path d="M.693 10.024c.381 0 .693-1.256.693-2.807 0-1.55-.312-2.807-.693-2.807C.312 4.41 0 5.666 0 7.217s.312 2.808.693 2.808ZM21.038 1.56c-.364 0-.684.805-.91 2.096C19.765 1.446 19.184 0 18.526 0c-.78 0-1.464 2.036-1.784 5-.312-2.158-.788-3.536-1.325-3.536-.745 0-1.386 2.704-1.62 6.472-.442-1.932-1.083-3.145-1.793-3.145s-1.35 1.213-1.793 3.145c-.242-3.76-.874-6.463-1.628-6.463-.537 0-1.013 1.378-1.325 3.535C6.938 2.036 6.262 0 5.474 0c-.658 0-1.247 1.447-1.602 3.665-.217-1.291-.546-2.105-.91-2.105-.675 0-1.221 2.807-1.221 6.272 0 3.466.546 6.273 1.221 6.273.277 0 .537-.476.736-1.273.32 2.928.996 4.938 1.776 4.938.606 0 1.143-1.204 1.507-3.11.251 3.622.875 6.195 1.602 6.195.46 0 .875-1.023 1.187-2.677C10.142 21.6 11 24 12.004 24c1.005 0 1.863-2.4 2.235-5.822.312 1.654.727 2.677 1.186 2.677.728 0 1.352-2.573 1.603-6.195.364 1.906.9 3.11 1.507 3.11.78 0 1.455-2.01 1.775-4.938.208.797.46 1.273.737 1.273.675 0 1.22-2.807 1.22-6.273-.008-3.457-.553-6.272-1.23-6.272ZM23.307 10.024c.381 0 .693-1.256.693-2.807 0-1.55-.312-2.807-.693-2.807-.381 0-.693 1.256-.693 2.807s.312 2.808.693 2.808Z"/>
+                                                                </svg>
                                                             </IconButton>
                                                         </Tooltip>
                                                     )}
                                                 </Box>
                                             </TableCell>
-                                            <TableCell sx={{ p: 0.5, width: 104, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+
+                                            {/* Download */}
+                                            <TableCell sx={{ p: 0.5, width: 92, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                                                 <DownloadButton album={album} artist={artist} />
                                             </TableCell>
                                         </TableRow>
                                         {isExpanded && album.mb_releasegroupid && (
                                             <TableRow key={`${rowId}-tracks`}>
-                                                <TableCell colSpan={7} sx={{ p: 0, borderBottom: 'none' }}>
+                                                <TableCell colSpan={5} sx={{ p: 0, borderBottom: 'none' }}>
                                                     <Collapse in={isExpanded} unmountOnExit>
                                                         <TrackList releaseId={album.mb_releasegroupid} />
                                                     </Collapse>
