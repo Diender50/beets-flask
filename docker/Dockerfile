@@ -88,7 +88,7 @@ FROM deps AS dev
 
 ARG PNPM_VERSION=9.12.0
 RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') \
-    && curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${ARCH}" \
+    && curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linuxstatic-${ARCH}" \
         -o /usr/local/bin/pnpm \
     && chmod +x /usr/local/bin/pnpm
 RUN pnpm config set store-dir /repo/frontend/.pnpm-store
@@ -122,7 +122,7 @@ FROM deps AS build
 
 ARG PNPM_VERSION=9.12.0
 RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') \
-    && curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${ARCH}" \
+    && curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linuxstatic-${ARCH}" \
         -o /usr/local/bin/pnpm \
     && chmod +x /usr/local/bin/pnpm
 RUN pnpm config set store-dir /repo/frontend/.pnpm-store
