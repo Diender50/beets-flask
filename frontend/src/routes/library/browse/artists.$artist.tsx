@@ -32,7 +32,7 @@ import {
     Typography,
     useTheme,
 } from '@mui/material';
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, RefreshCw, XCircleIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PlayIcon, RefreshCw, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
@@ -61,6 +61,7 @@ import {
 import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { CoverArt } from '@/components/library/coverArt';
+import { useAudioContext } from '@/components/library/audio/context';
 
 export const Route = createFileRoute('/library/browse/artists/$artist')({
     loader: async (opts) => {
@@ -71,7 +72,7 @@ export const Route = createFileRoute('/library/browse/artists/$artist')({
             artistQueryOptions(opts.params.artist)
         );
         const p3 = opts.context.queryClient.ensureQueryData(
-            itemsByArtistQueryOptions(opts.params.artist, true)
+            itemsByArtistQueryOptions(opts.params.artist, false)
         );
         await Promise.all([p1, p2, p3]);
     },
@@ -85,7 +86,7 @@ function RouteComponent() {
         albumsByArtistQueryOptions(params.artist, false, true)
     );
     const { data: items } = useSuspenseQuery(
-        itemsByArtistQueryOptions(params.artist, true)
+        itemsByArtistQueryOptions(params.artist, false)
     );
 
     return (
@@ -189,7 +190,7 @@ function Viewer({
     ...props
 }: {
     albums: Album<false, true>[];
-    items: Item<true>[];
+    items: Item<false>[];
     artist: string;
 } & BoxProps) {
     const theme = useTheme();
@@ -250,9 +251,20 @@ function Viewer({
         return map;
     }, [items, albumIds]);
 
+    const itemsByAlbumId = useMemo(() => {
+        const map = new Map<number, Item<false>[]>();
+        for (const item of items) {
+            if (albumIds.has(item.album_id)) {
+                if (!map.has(item.album_id)) map.set(item.album_id, []);
+                map.get(item.album_id)!.push(item);
+            }
+        }
+        return map;
+    }, [items, albumIds]);
+
     // Items where this artist is featured but is NOT the albumartist
     const featuredByAlbum = useMemo(() => {
-        const map = new Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>();
+        const map = new Map<number, { albumName: string; albumArtist: string; tracks: Item<false>[] }>();
         for (const item of items) {
             if (albumIds.has(item.album_id)) continue;
             if (!map.has(item.album_id)) {
@@ -269,7 +281,7 @@ function Viewer({
 
     const filteredFeaturedByAlbum = useMemo(() => {
         if (!filter) return featuredByAlbum;
-        const result = new Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>();
+        const result = new Map<number, { albumName: string; albumArtist: string; tracks: Item<false>[] }>();
         for (const [albumId, entry] of featuredByAlbum) {
             const matchAlbum = entry.albumName.toLowerCase().includes(filter.toLowerCase());
             const matchArtist = entry.albumArtist.toLowerCase().includes(filter.toLowerCase());
@@ -428,7 +440,7 @@ function Viewer({
                 }}
             >
                 {selected === 'albums' && (
-                    <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} />
+                    <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} itemsByAlbumId={itemsByAlbumId} />
                 )}
                 {selected === 'albums' && filteredFeaturedByAlbum.size > 0 && (
                     <FeaturedOnViewer featuredByAlbum={filteredFeaturedByAlbum} />
@@ -462,11 +474,21 @@ function Viewer({
 function AlbumsViewer({
     albums,
     trackCountByAlbumId,
+    itemsByAlbumId,
 }: {
     albums: Album<false, true>[];
     trackCountByAlbumId: Map<number, number>;
+    itemsByAlbumId: Map<number, Item<false>[]>;
 }) {
     const navigate = useNavigate();
+    const { replaceQueue } = useAudioContext();
+
+    const playAlbum = (albumId: number, e: { stopPropagation: () => void }) => {
+        e.stopPropagation();
+        const tracks = itemsByAlbumId.get(albumId) ?? [];
+        if (tracks.length === 0) return;
+        replaceQueue(tracks);
+    };
     const grouped = useMemo(() => {
         const map = new Map<string, Album<false, true>[]>();
         for (const album of albums) {
@@ -526,21 +548,45 @@ function AlbumsViewer({
                                 <TableRow
                                     key={album.id}
                                     hover
-                                    sx={{ cursor: 'pointer' }}
+                                    sx={{
+                                        cursor: 'pointer',
+                                        '&:hover .album-play-overlay': { opacity: 1 },
+                                    }}
                                     onClick={() => void navigate({ to: '/library/album/$albumId', params: { albumId: album.id } })}
                                 >
                                     <TableCell sx={{ p: 0.5, width: 44 }}>
-                                        <CoverArt
-                                            type="album"
-                                            beetsId={album.id}
-                                            sx={{
-                                                width: 36,
-                                                height: 36,
-                                                objectFit: 'cover',
-                                                borderRadius: 0.5,
-                                                display: 'block',
-                                            }}
-                                        />
+                                        <Box sx={{ position: 'relative', width: 36, height: 36 }}>
+                                            <CoverArt
+                                                type="album"
+                                                beetsId={album.id}
+                                                sx={{
+                                                    width: 36,
+                                                    height: 36,
+                                                    objectFit: 'cover',
+                                                    borderRadius: 0.5,
+                                                    display: 'block',
+                                                }}
+                                            />
+                                            <Box
+                                                className="album-play-overlay"
+                                                onClick={(e: { stopPropagation: () => void }) => playAlbum(album.id, e)}
+                                                sx={{
+                                                    position: 'absolute',
+                                                    inset: 0,
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    backgroundColor: 'rgba(0,0,0,0.55)',
+                                                    borderRadius: 0.5,
+                                                    opacity: 0,
+                                                    transition: 'opacity 0.15s',
+                                                    cursor: 'pointer',
+                                                    color: 'white',
+                                                }}
+                                            >
+                                                <PlayIcon size={18} fill="currentColor" />
+                                            </Box>
+                                        </Box>
                                     </TableCell>
                                     <TableCell>
                                         <Link
@@ -568,7 +614,7 @@ function AlbumsViewer({
 function FeaturedOnViewer({
     featuredByAlbum,
 }: {
-    featuredByAlbum: Map<number, { albumName: string; albumArtist: string; tracks: Item<true>[] }>;
+    featuredByAlbum: Map<number, { albumName: string; albumArtist: string; tracks: Item<false>[] }>;
 }) {
     const navigate = useNavigate();
     return (

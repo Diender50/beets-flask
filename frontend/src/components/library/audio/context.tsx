@@ -37,6 +37,7 @@ interface AudioContextI {
     nextItem: () => ItemResponse | null;
     prevItem: () => ItemResponse | null;
     clearItems: () => void;
+    replaceQueue: (items: ItemResponse[], autoplay?: boolean) => void;
     addToQueue: (
         item: ItemResponse,
         setAsCurrent?: boolean,
@@ -81,6 +82,8 @@ export function AudioContextProvider({
         hasPrev,
         clear: clearItems,
         add,
+        setItems,
+        setCurrentIndex,
     } = useNavigableList<ItemResponse>([]);
 
     const {
@@ -94,6 +97,14 @@ export function AudioContextProvider({
         volume,
         canPlay,
     } = useAudioData(currentItem);
+
+    function replaceQueue(newItems: ItemResponse[], autoplay = true) {
+        // Set items and current index atomically, bypassing the stale-closure
+        // issue in add() where items.length captures a stale value after clear().
+        setItems(newItems);
+        setCurrentIndex(newItems.length > 0 ? 0 : null);
+        if (autoplay && newItems.length > 0) setAutoplay(true);
+    }
 
     function addToQueue(
         item: ItemResponse,
@@ -160,6 +171,7 @@ export function AudioContextProvider({
                 nextItem: nextItem,
                 prevItem: prevItem,
                 clearItems,
+                replaceQueue,
                 addToQueue,
                 // audio data
                 buffered,
