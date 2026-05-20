@@ -276,10 +276,18 @@ def _normalize_for_dedup(title: str) -> str:
     #         EM DASH —, MINUS SIGN −, SMALL HYPHEN-MINUS ﹣, FULLWIDTH －
     t = re.sub(r"[‐‑‒–—−﹘﹣－]", "-", t)
 
-    # Normalize apostrophe/quote variants → plain apostrophe U+0027
-    # Covers: LEFT/RIGHT SINGLE QUOTATION ' ', MODIFIER LETTER APOSTROPHE ʼ,
-    #         FULLWIDTH APOSTROPHE ＇, GRAVE ACCENT `, ACUTE ACCENT ´, PRIME ′
-    t = re.sub(r"[‘’ʼ＇`´′]", "'", t)
+    # Strip apostrophe/quote variants entirely for dedup robustness:
+    # "t’aime" == "taime" regardless of which Unicode apostrophe the source uses.
+    # \uXXXX escapes are resolved by Python at parse time → encoding-safe.
+    t = re.sub(
+        "['`´ʹʻʼʽ‘’‚‛′‵＇]",
+        "",
+        t,
+    )
+
+    # Normalize conjunction variants → & so "A & B", "A and B", "A et B" all match.
+    t = re.sub(r"\s+(?:and|et)\s+", " & ", t)
+    t = re.sub(r"\s*&\s*", " & ", t)
 
     # Remove parenthetical / bracketed edition suffixes
     t = re.sub(
@@ -533,7 +541,9 @@ def _missing_albums_from_musicbrainz(
 
     for artist_mbid in sorted(artist_mbids):
         try:
-            response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+            response = musicbrainzngs.browse_release_groups(
+                artist=artist_mbid, includes=["artist-credits"]
+            )
             had_successful_lookup = True
         except Exception as exc:
             log.warning(
@@ -549,6 +559,14 @@ def _missing_albums_from_musicbrainz(
             release_group_id = release_group.get("id")
             if not release_group_id or release_group_id in owned_release_group_ids:
                 continue
+            # Skip release groups where this artist is only a guest/featured artist.
+            # The first entry in artist-credit is the primary credited artist.
+            artist_credit = release_group.get("artist-credit") or []
+            first_credit = artist_credit[0] if artist_credit else None
+            if first_credit:
+                first_mbid = (first_credit.get("artist") or {}).get("id")
+                if first_mbid and first_mbid not in artist_mbids:
+                    continue
             # Also filter by title: catches imported albums whose mb_releasegroupid
             # doesn't match (e.g. beets set a different release ID, or no ID at all)
             title_key = _normalize_for_dedup(release_group.get("title", ""))
@@ -577,7 +595,9 @@ def _missing_albums_from_musicbrainz(
             )
         for artist_mbid in extra_mbids:
             try:
-                response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+                response = musicbrainzngs.browse_release_groups(
+                    artist=artist_mbid, includes=["artist-credits"]
+                )
             except Exception:
                 continue
 
@@ -585,6 +605,12 @@ def _missing_albums_from_musicbrainz(
                 release_group_id = release_group.get("id")
                 if not release_group_id or release_group_id in owned_release_group_ids:
                     continue
+                artist_credit = release_group.get("artist-credit") or []
+                first_credit = artist_credit[0] if artist_credit else None
+                if first_credit:
+                    first_mbid = (first_credit.get("artist") or {}).get("id")
+                    if first_mbid and first_mbid not in artist_mbids:
+                        continue
                 title_key = _normalize_for_dedup(release_group.get("title", ""))
                 if title_key in owned_titles:
                     continue
@@ -660,13 +686,18 @@ def _missing_albums_from_deezer(
             year: int | None = int(year_str[:4]) if len(year_str) >= 4 else None
             deezer_id = album.get("id")
 
-            # Fetch individual album to get nb_tracks (not available in artist albums list)
+            # Fetch individual album to verify main artist and get nb_tracks.
+            # /artist/{id}/albums also returns albums where the artist is only a
+            # contributor (feat.), so we skip those by checking album_detail["artist"]["id"].
             track_count: int | None = None
             if deezer_id:
                 try:
                     album_url = f"https://api.deezer.com/album/{deezer_id}"
                     with urllib.request.urlopen(album_url, timeout=5) as req:  # noqa: S310
                         album_detail = json.loads(req.read())
+                    main_artist_id = (album_detail.get("artist") or {}).get("id")
+                    if main_artist_id and int(main_artist_id) != artist_id:
+                        continue
                     track_count = album_detail.get("nb_tracks")
                 except Exception:
                     pass

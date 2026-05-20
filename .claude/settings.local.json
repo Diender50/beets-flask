@@ -4,7 +4,9 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\roudn\\\\Sync-in\\\\06_DEV\\\\202605_beets-flask\\\\beets-flask\")",
       "Bash(Select-Object Name, PSIsContainer)",
       "WebFetch(domain:qobuz.squid.wtf)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(python -c ' *)",
+      "Bash(python fix_apostrophe.py)"
     ]
   }
 }
