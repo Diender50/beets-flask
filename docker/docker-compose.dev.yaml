@@ -9,7 +9,8 @@ services:
         image: beets-flask
         restart: unless-stopped
         ports:
-            - "5001:5001" # for beets-flask
+            - "5001:5001" # for beets-flask (Quart)
+            - "5002:5002" # for beets-flask v2 (FastAPI)
             - "5173:5173" # for vite dev server
         environment:
             # 502 is default on macos, 1000 on linux
