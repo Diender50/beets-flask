@@ -118,6 +118,7 @@ export function InboxCard({ folder }: { folder: Folder }) {
             <Box
                 sx={{
                     width: '100%',
+                    flexShrink: 0,
                     border: '1px solid',
                     borderColor: 'divider',
                     borderRadius: 1,

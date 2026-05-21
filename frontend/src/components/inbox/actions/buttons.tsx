@@ -20,6 +20,7 @@ import {
     Checkbox,
     IconButton,
     Tooltip,
+    useMediaQuery,
     useTheme,
 } from '@mui/material';
 import { useMutation } from '@tanstack/react-query';
@@ -145,17 +146,37 @@ function ActionButtonSingle({
         onMutate?.(r);
     };
 
+    const theme = useTheme();
+    const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+    const label = action.label || action.name.replace(/_/g, ' ');
+
     return (
         <>
-            <Button
-                onClick={handleClick}
-                startIcon={<ActionIcon action={action} />}
-                loading={isPending}
-                color="secondary"
-                {...props}
-            >
-                {action.label || action.name.replace(/_/g, ' ')}
-            </Button>
+            {isMobile ? (
+                <Tooltip title={label} placement="top">
+                    <span>
+                        <IconButton
+                            onClick={handleClick}
+                            disabled={isPending}
+                            color="secondary"
+                            size="small"
+                        >
+                            <ActionIcon action={action} />
+                        </IconButton>
+                    </span>
+                </Tooltip>
+            ) : (
+                <Button
+                    size="small"
+                    onClick={handleClick}
+                    startIcon={<ActionIcon action={action} />}
+                    loading={isPending}
+                    color="secondary"
+                    {...props}
+                >
+                    {label}
+                </Button>
+            )}
             {Dialog}
         </>
     );
@@ -167,14 +188,14 @@ function ActionButtonMultiple({
 }: {
     actions: Action[];
 } & Omit<SplitButtonOptionProps, 'options'>) {
+    const theme = useTheme();
+    const isMobile = useMediaQuery(theme.breakpoints.down('md'));
     const [open, setOpen] = useState(false);
     const [selectedActionIdx, setSelectedActionIdx] = useState(0);
     const selectedAction = actions[selectedActionIdx];
 
     const { mutate, isPending } = useActionMutation(selectedAction);
 
-    // Some actions might have a confirmation dialog, so we need to handle that
-    // note: we need to call this without jsx to check if it returns a dialog or not
     const Dialog = ActionDialog({ action: selectedAction, open, setOpen });
     const handleClick = (
         e: React.MouseEvent<HTMLButtonElement, MouseEvent>
@@ -184,11 +205,9 @@ function ActionButtonMultiple({
             setOpen(true);
             return;
         }
-        // If no dialog or shift key is pressed, execute the action immediately
         mutate();
     };
 
-    // map actions to options for the split button
     const options = actions.map((action) => ({
         label:
             action.label ||
@@ -198,23 +217,46 @@ function ActionButtonMultiple({
         key: action.name,
         buttonProps: {
             startIcon: <ActionIcon action={action} />,
-            //disabled: selected.hashes.length === 0,
         },
     }));
 
+    if (isMobile) {
+        const label = selectedAction.label || selectedAction.name.replace(/_/g, ' ');
+        return (
+            <>
+                <Tooltip title={label} placement="top">
+                    <span>
+                        <IconButton
+                            onClick={handleClick}
+                            disabled={isPending}
+                            color="secondary"
+                            size="small"
+                        >
+                            <ActionIcon action={selectedAction} />
+                        </IconButton>
+                    </span>
+                </Tooltip>
+                {Dialog}
+            </>
+        );
+    }
+
     return (
-        <SplitButtonOptions
-            color="secondary"
-            options={options}
-            onClick={(option, event) => {
-                handleClick(event);
-            }}
-            onMenuItemClick={(option, index) => {
-                setSelectedActionIdx(index);
-            }}
-            loading={isPending}
-            {...props}
-        />
+        <>
+            <SplitButtonOptions
+                color="secondary"
+                options={options}
+                onClick={(option, event) => {
+                    handleClick(event);
+                }}
+                onMenuItemClick={(option, index) => {
+                    setSelectedActionIdx(index);
+                }}
+                loading={isPending}
+                {...props}
+            />
+            {Dialog}
+        </>
     );
 }
 

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Badge,
     Button,
     Dialog,
     DialogActions,
@@ -14,8 +13,6 @@ import {
     Checkbox,
     Collapse,
     Divider,
-    FormControlLabel,
-    FormGroup,
     IconButton,
     InputLabel,
     List as MuiList,
@@ -29,7 +26,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PlayIcon, RefreshCw, XCircleIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PauseIcon, PlayIcon, RefreshCw, Trash2, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
@@ -55,6 +52,7 @@ import {
     startBatchDownload,
     startDownload,
 } from '@/api/discovery';
+import { deleteAlbumFromLibrary } from '@/api/library';
 import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { CoverArt } from '@/components/library/coverArt';
@@ -64,7 +62,7 @@ import { PageWrapper } from '@/components/common/page';
 export const Route = createFileRoute('/library/browse/artists/$artist')({
     loader: async (opts) => {
         const p1 = opts.context.queryClient.ensureQueryData(
-            albumsByArtistQueryOptions(opts.params.artist, false, true)
+            albumsByArtistQueryOptions(opts.params.artist, false, false)
         );
         const p2 = opts.context.queryClient.ensureQueryData(
             artistQueryOptions(opts.params.artist)
@@ -81,7 +79,7 @@ function RouteComponent() {
     const params = Route.useParams();
 
     const { data: albums } = useSuspenseQuery(
-        albumsByArtistQueryOptions(params.artist, false, true)
+        albumsByArtistQueryOptions(params.artist, false, false)
     );
     const { data: items } = useSuspenseQuery(
         itemsByArtistQueryOptions(params.artist, false)
@@ -147,6 +145,31 @@ function ArtistHeader() {
     );
 }
 
+function computeQualityLabel(items: Item<false>[]): string | null {
+    if (!items.length) return null;
+    const item = items[0];
+    const fmt = (item.format ?? '').toLowerCase().trim();
+    const bd = item.bitdepth ?? 0;
+    const sr = item.samplerate ?? 0;
+    const kbps = item.bitrate > 0 ? Math.round(item.bitrate / 1000) : 0;
+    if (fmt.includes('flac')) return (bd >= 24 || sr > 48000) ? 'FLAC-24' : 'FLAC-16';
+    if (fmt.includes('alac') || fmt.includes('apple lossless')) return bd >= 24 ? 'ALAC-24' : 'ALAC-16';
+    if (fmt.includes('aiff') || fmt === 'aif' || fmt.includes('wav')) return bd >= 24 ? 'PCM-24' : 'PCM-16';
+    if (fmt.includes('mp3') || fmt === 'mpeg audio') return `MP3-${kbps}`;
+    if (fmt.includes('opus')) return `Opus-${kbps}`;
+    if (fmt.includes('ogg') || fmt.includes('vorbis')) return `OGG-${kbps}`;
+    if (fmt.includes('aac') || fmt.includes('m4a')) return `AAC-${kbps}`;
+    if (fmt) return fmt.split(' ')[0].toUpperCase();
+    return null;
+}
+
+function qualityColor(label: string): 'info' | 'warning' | 'default' {
+    const l = label.toLowerCase();
+    if (l.startsWith('flac') || l.startsWith('alac') || l.startsWith('pcm') || l.startsWith('aiff') || l.startsWith('wav')) return 'info';
+    if (l.startsWith('mp3')) return 'warning';
+    return 'default';
+}
+
 function Viewer({
     albums,
     items,
@@ -154,14 +177,12 @@ function Viewer({
     sx,
     ...props
 }: {
-    albums: Album<false, true>[];
+    albums: Album<false, false>[];
     items: Item<false>[];
     artist: string;
 } & BoxProps) {
     const queryClient = useQueryClient();
-    const [selected, setSelected] = useState<'albums' | 'missing'>('albums');
     const [filter, setFilter] = useState('');
-    const [albumTypeFilter, setAlbumTypeFilter] = useState<string | null>(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
 
     const missingAlbumsQuery = useQuery(missingAlbumsByArtistQueryOptions(artist));
@@ -179,31 +200,6 @@ function Viewer({
     };
 
     const albumIds = useMemo(() => new Set(albums.map((a) => a.id)), [albums]);
-
-    const albumTypes = useMemo(() => {
-        const types = new Set<string>();
-        for (const album of albums) {
-            if (album.albumtype) types.add(album.albumtype);
-        }
-        return [...types].sort();
-    }, [albums]);
-
-    const filteredAlbums = useMemo(() => {
-        return albums.filter((album) => {
-            const matchesText = !filter || album.name.toLowerCase().includes(filter.toLowerCase());
-            const matchesType = !albumTypeFilter || album.albumtype === albumTypeFilter;
-            return matchesText && matchesType;
-        });
-    }, [albums, filter, albumTypeFilter]);
-
-    const filteredMissingAlbums = useMemo(() => {
-        if (!filter) {
-            return missingAlbums;
-        }
-        return missingAlbums.filter((album) => {
-            return album.album.toLowerCase().includes(filter.toLowerCase());
-        });
-    }, [missingAlbums, filter]);
 
     const trackCountByAlbumId = useMemo(() => {
         const map = new Map<number, number>();
@@ -226,45 +222,60 @@ function Viewer({
         return map;
     }, [items, albumIds]);
 
+    // Convert library albums to MissingAlbum format so they can be merged.
+    // Album<false, false> = AlbumResponseFull — sources array contains MB/Deezer IDs.
+    // __normalize_id_key('mb', 'mb_releasegroupid') → 'releasegroup_id' in sources[mb].extra.
+    const libraryAsEntries: MissingAlbum[] = useMemo(() => albums.map((album: Album<false, false>) => {
+        type Src = { source: string; album_id?: string; extra?: Record<string, string> };
+        const sources = (album.sources ?? []) as Src[];
+        const mbSrc = sources.find((s) => s.source === 'mb');
+        const isUuid = (id: string) => id.includes('-');
+        const rgId   = mbSrc?.extra?.['releasegroup_id'];
+        const albId  = mbSrc?.album_id;
+        // Release group: always a UUID.
+        const mbRgId  = rgId  && isUuid(rgId)  ? rgId  : undefined;
+        // Release: UUID → MB link; numeric → treat as Deezer ID.
+        const mbRelId = albId && isUuid(albId)  ? albId : undefined;
+        const deezId  = albId && !isUuid(albId) ? albId : undefined;
+        return {
+            album: album.name,
+            year: album.year ?? undefined,
+            release_type: album.albumtype ?? 'album',
+            track_count: trackCountByAlbumId.get(album.id),
+            cover_url: undefined,
+            mb_releasegroupid: mbRgId ?? (mbRelId ? `release:${mbRelId}` : undefined),
+            deezer_id: deezId,
+            library_album_id: album.id,
+        };
+    }), [albums, trackCountByAlbumId]);
+
+    // Merged list sorted by year descending — library albums and missing albums interleaved.
+    const allAlbums: MissingAlbum[] = useMemo(() => {
+        const merged = [...libraryAsEntries, ...missingAlbums];
+        merged.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
+        return merged;
+    }, [libraryAsEntries, missingAlbums]);
+
+    const filteredAllAlbums = useMemo(() => {
+        if (!filter) return allAlbums;
+        const q = filter.toLowerCase();
+        return allAlbums.filter((a) => a.album.toLowerCase().includes(q));
+    }, [allAlbums, filter]);
+
+    const nRemovedByFilter = allAlbums.length - filteredAllAlbums.length;
+
     // Items where this artist is featured but is NOT the albumartist
     const featuredByAlbum = useMemo(() => {
         const map = new Map<number, { albumName: string; albumArtist: string; tracks: Item<false>[] }>();
         for (const item of items) {
             if (albumIds.has(item.album_id)) continue;
             if (!map.has(item.album_id)) {
-                map.set(item.album_id, {
-                    albumName: item.album,
-                    albumArtist: item.albumartist,
-                    tracks: [],
-                });
+                map.set(item.album_id, { albumName: item.album, albumArtist: item.albumartist, tracks: [] });
             }
             map.get(item.album_id)!.tracks.push(item);
         }
         return map;
     }, [items, albumIds]);
-
-    const filteredFeaturedByAlbum = useMemo(() => {
-        if (!filter) return featuredByAlbum;
-        const result = new Map<number, { albumName: string; albumArtist: string; tracks: Item<false>[] }>();
-        for (const [albumId, entry] of featuredByAlbum) {
-            const matchAlbum = entry.albumName.toLowerCase().includes(filter.toLowerCase());
-            const matchArtist = entry.albumArtist.toLowerCase().includes(filter.toLowerCase());
-            const matchTrack = entry.tracks.some((t) =>
-                t.name.toLowerCase().includes(filter.toLowerCase())
-            );
-            if (matchAlbum || matchArtist || matchTrack) {
-                result.set(albumId, entry);
-            }
-        }
-        return result;
-    }, [featuredByAlbum, filter]);
-
-    const nAlbumsRemovedByFilter = albums.length - filteredAlbums.length;
-    const nMissingRemovedByFilter =
-        missingAlbums.length - filteredMissingAlbums.length;
-
-    const nRemovedByFilter =
-        selected === 'albums' ? nAlbumsRemovedByFilter : nMissingRemovedByFilter;
 
     return (
         <Box
@@ -289,54 +300,18 @@ function Viewer({
                 }}
             >
                 <Search value={filter} setValue={setFilter} size="small" sx={{ flex: '1 1 auto', maxWidth: 260 }} />
-
-                {/* Tab switcher */}
-                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-                    <Button
-                        size="small"
-                        variant={selected === 'albums' ? 'contained' : 'text'}
-                        disableElevation
-                        onClick={() => setSelected('albums')}
-                        startIcon={<AlbumIcon size={14} />}
-                        sx={{ textTransform: 'none', fontSize: 12 }}
-                    >
-                        Albums
-                    </Button>
-                    <Badge
-                        badgeContent={missingAlbums.length}
-                        color="error"
-                        max={99}
-                        sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 14, minWidth: 14, top: 2, right: -2 } }}
-                    >
-                        <Button
-                            size="small"
-                            variant={selected === 'missing' ? 'contained' : 'text'}
-                            disableElevation
-                            onClick={() => setSelected('missing')}
-                            sx={{ textTransform: 'none', fontSize: 12 }}
-                        >
-                            Missing
-                        </Button>
-                    </Badge>
-                    {selected === 'missing' && (
-                        <Tooltip title="Recompute from MusicBrainz & Deezer (bypass cache)">
-                            <IconButton size="small" onClick={() => void handleRefreshMissing()} disabled={isRefreshing || missingAlbumsQuery.isLoading} sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}>
-                                {isRefreshing ? <CircularProgress size={13} /> : <RefreshCw size={13} />}
-                            </IconButton>
-                        </Tooltip>
+                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', ml: 'auto' }}>
+                    {missingAlbums.length > 0 && (
+                        <Typography variant="caption" color="error.main" sx={{ opacity: 0.8 }}>
+                            {missingAlbums.length} missing
+                        </Typography>
                     )}
+                    <Tooltip title="Recompute missing albums from MusicBrainz & Deezer (bypass cache)">
+                        <IconButton size="small" onClick={() => void handleRefreshMissing()} disabled={isRefreshing || missingAlbumsQuery.isLoading} sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}>
+                            {isRefreshing ? <CircularProgress size={13} /> : <RefreshCw size={13} />}
+                        </IconButton>
+                    </Tooltip>
                 </Box>
-
-                {/* Type filter chips */}
-                {selected === 'albums' && albumTypes.length > 1 && (
-                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', width: '100%' }}>
-                        <Chip label="All" size="small" variant={albumTypeFilter === null ? 'filled' : 'outlined'} color={albumTypeFilter === null ? 'primary' : 'default'} onClick={() => setAlbumTypeFilter(null)} />
-                        {albumTypes.map((type) => (
-                            <Chip key={type} label={type} size="small" variant={albumTypeFilter === type ? 'filled' : 'outlined'} color={albumTypeFilter === type ? 'primary' : 'default'} onClick={() => setAlbumTypeFilter(albumTypeFilter === type ? null : type)} />
-                        ))}
-                    </Box>
-                )}
-
                 {nRemovedByFilter > 0 && (
                     <Typography variant="caption" color="text.disabled" sx={{ width: '100%' }}>
                         {nRemovedByFilter} hidden by filter
@@ -345,32 +320,23 @@ function Viewer({
             </Box>
 
             <Box sx={{ overflow: 'hidden', flex: '1 1 auto', px: 2, minHeight: 0 }}>
-                {selected === 'albums' && (
-                    <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} itemsByAlbumId={itemsByAlbumId} />
-                )}
-                {selected === 'albums' && filteredFeaturedByAlbum.size > 0 && (
-                    <FeaturedOnViewer featuredByAlbum={filteredFeaturedByAlbum} />
-                )}
-                {selected === 'missing' && (
-                    missingAlbumsQuery.isLoading ? (
-                        <Box
-                            sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                height: '100%',
-                            }}
-                        >
-                            <CircularProgress size={20} />
-                        </Box>
-                    ) : (
+                {missingAlbumsQuery.isLoading ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                        <CircularProgress size={20} />
+                    </Box>
+                ) : (
+                    <>
                         <MissingAlbumsViewer
-                            albums={filteredMissingAlbums}
+                            albums={filteredAllAlbums}
                             artist={artist}
                             isRefreshing={isRefreshing}
                             onRefresh={handleRefreshMissing}
+                            itemsByAlbumId={itemsByAlbumId}
                         />
-                    )
+                        {featuredByAlbum.size > 0 && (
+                            <FeaturedOnViewer featuredByAlbum={featuredByAlbum} />
+                        )}
+                    </>
                 )}
             </Box>
         </Box>
@@ -382,7 +348,7 @@ function AlbumsViewer({
     trackCountByAlbumId,
     itemsByAlbumId,
 }: {
-    albums: Album<false, true>[];
+    albums: Album<false, false>[];
     trackCountByAlbumId: Map<number, number>;
     itemsByAlbumId: Map<number, Item<false>[]>;
 }) {
@@ -396,7 +362,7 @@ function AlbumsViewer({
         replaceQueue(tracks);
     };
     const grouped = useMemo(() => {
-        const map = new Map<string, Album<false, true>[]>();
+        const map = new Map<string, Album<false, false>[]>();
         for (const album of albums) {
             const type = album.albumtype ?? 'album';
             if (!map.has(type)) map.set(type, []);
@@ -1424,12 +1390,51 @@ function MissingAlbumsViewer({
     artist,
     isRefreshing,
     onRefresh,
+    itemsByAlbumId,
 }: {
     albums: MissingAlbum[];
     artist: string;
     isRefreshing: boolean;
     onRefresh: () => Promise<void>;
+    itemsByAlbumId?: Map<number, Item<false>[]>;
 }) {
+    const navigate = useNavigate();
+    const queryClient = useQueryClient();
+    const { replaceQueue, playing, togglePlaying, currentItem } = useAudioContext();
+
+    const [pendingDelete, setPendingDelete] = useState<MissingAlbum | null>(null);
+
+    const deleteMutation = useMutation({
+        mutationFn: (albumId: number) => deleteAlbumFromLibrary(albumId),
+        onSuccess: (_data: void, albumId: number) => {
+            // Optimistically remove from library cache → merged list updates instantly.
+            queryClient.setQueryData(
+                albumsByArtistQueryOptions(artist, false, true).queryKey,
+                (old: Album<false, false>[] | undefined) => (old ?? []).filter((a) => a.id !== albumId)
+            );
+            // Optimistically add to missing albums cache.
+            if (pendingDelete) {
+                const { library_album_id: _lib, ...asMissing } = pendingDelete;
+                queryClient.setQueryData(
+                    missingAlbumsByArtistQueryOptions(artist).queryKey,
+                    (old: MissingAlbum[] | undefined) => [...(old ?? []), { ...asMissing, cover_url: undefined }]
+                );
+            }
+            setPendingDelete(null);
+            void queryClient.invalidateQueries({ queryKey: ['albums'] });
+            void queryClient.invalidateQueries({ queryKey: ['artists'] });
+            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+        onError: () => setPendingDelete(null),
+    });
+
+    const playLibraryAlbum = (albumId: number, e: { stopPropagation: () => void }) => {
+        e.stopPropagation();
+        const tracks = itemsByAlbumId?.get(albumId) ?? [];
+        if (tracks.length === 0) return;
+        replaceQueue(tracks);
+    };
+
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf'>>(
@@ -1477,12 +1482,18 @@ function MissingAlbumsViewer({
         return map;
     }, [albumEntries]);
 
-    const selectedEntries = useMemo(
-        () => albumEntries.filter((entry) => selectedIds.has(entry.id)),
-        [albumEntries, selectedIds]
+    // Library albums are not selectable for batch download.
+    const downloadableEntries = useMemo(
+        () => albumEntries.filter((e: { id: string; album: MissingAlbum }) => !e.album.library_album_id),
+        [albumEntries]
     );
 
-    const allSelected = selectedIds.size > 0 && selectedIds.size === albumEntries.length;
+    const selectedEntries = useMemo(
+        () => downloadableEntries.filter((entry: { id: string; album: MissingAlbum }) => selectedIds.has(entry.id)),
+        [downloadableEntries, selectedIds]
+    );
+    const selectedCount = selectedEntries.length;
+    const allSelected = selectedCount > 0 && selectedCount === downloadableEntries.length;
 
     const batchMutation = useMutation({
         mutationFn: async () => {
@@ -1549,150 +1560,140 @@ function MissingAlbumsViewer({
             setSelectedIds(new Set());
             return;
         }
-        setSelectedIds(new Set(albumEntries.map((entry) => entry.id)));
+        setSelectedIds(new Set(downloadableEntries.map((entry: { id: string; album: MissingAlbum }) => entry.id)));
     };
 
     return (
+        <>
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
             {/* Batch download controls */}
             <Box
                 sx={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 2,
-                    px: 1.5,
-                    py: 1,
-                    mt: 1.5,
-                    mb: 1,
+                    gap: 1,
+                    px: 1,
+                    py: 0.75,
+                    mt: 1,
+                    mb: 0.75,
                     border: 1,
                     borderColor: 'divider',
                     borderRadius: 1,
                     backgroundColor: 'grey.900',
                     flexWrap: 'wrap',
+                    rowGap: 0.75,
                 }}
             >
-                {/* Left: action buttons */}
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 160 }}>
+                {/* Download button + select-all */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+                    <Tooltip title={allSelected ? 'Unselect all' : 'Select all'}>
+                        <Checkbox
+                            size="small"
+                            checked={allSelected}
+                            indeterminate={selectedIds.size > 0 && !allSelected}
+                            onChange={toggleAll}
+                            sx={{ p: 0.5 }}
+                        />
+                    </Tooltip>
                     <Button
                         variant="contained"
                         color="primary"
                         disableElevation
                         size="small"
                         disabled={
-                            selectedIds.size === 0 ||
+                            selectedCount === 0 ||
                             batchMutation.isPending ||
                             batchProviders.size === 0 ||
                             selectedQualities.length === 0
                         }
                         onClick={() => batchMutation.mutate()}
-                        sx={{ fontWeight: 700, textTransform: 'none', height: 32 }}
+                        sx={{ fontWeight: 700, textTransform: 'none', height: 26, fontSize: 11, px: 1, whiteSpace: 'nowrap' }}
                     >
-                        {batchMutation.isPending ? 'Scheduling…' : `Download (${selectedIds.size})`}
+                        {batchMutation.isPending
+                            ? <CircularProgress size={12} sx={{ mr: 0.5 }} />
+                            : <DownloadIcon size={12} style={{ marginRight: 4 }} />}
+                        {batchMutation.isPending ? 'Scheduling…' : selectedCount > 0 ? `${selectedCount}` : 'Download'}
                     </Button>
-                    <FormControlLabel
-                        sx={{ m: 0 }}
-                        control={
-                            <Checkbox
-                                size="small"
-                                checked={allSelected}
-                                indeterminate={selectedIds.size > 0 && !allSelected}
-                                onChange={toggleAll}
-                            />
-                        }
-                        label={<Typography variant="caption">Select all</Typography>}
-                    />
                 </Box>
 
-                <Divider orientation="vertical" flexItem />
+                <Divider orientation="vertical" flexItem sx={{ mx: 0.25 }} />
 
-                {/* Providers */}
-                <Box>
-                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>
-                        Providers
+                {/* Provider + Quality — 2-col grid: labels col | chips col */}
+                <Box sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'auto 1fr',
+                    columnGap: 1,
+                    rowGap: 0.5,
+                    alignItems: 'center',
+                    flex: 1,
+                    minWidth: 0,
+                }}>
+                    <Typography variant="caption" color="text.disabled" sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        Provider
                     </Typography>
-                    <FormGroup row sx={{ gap: 0.25 }}>
-                        {(['deemix', 'slskd', 'squidwtf'] as const).map((p) => (
-                            <FormControlLabel
-                                key={p}
-                                sx={{ mr: 1, ml: 0 }}
-                                control={
-                                    <Checkbox
-                                        size="small"
-                                        checked={batchProviders.has(p)}
-                                        onChange={(e: { target: { checked: boolean } }) =>
-                                            setBatchProviders((prev: Set<'deemix' | 'slskd' | 'squidwtf'>) => {
-                                                const next = new Set(prev);
-                                                e.target.checked ? next.add(p) : next.delete(p);
-                                                return next;
-                                            })
-                                        }
-                                    />
-                                }
-                                label={<Typography variant="caption">{p}</Typography>}
-                            />
-                        ))}
-                    </FormGroup>
-                </Box>
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                        {(['deemix', 'slskd', 'squidwtf'] as const).map((p) => {
+                            const on = batchProviders.has(p);
+                            return (
+                                <Chip
+                                    key={p}
+                                    label={p}
+                                    size="small"
+                                    variant={on ? 'filled' : 'outlined'}
+                                    color={on ? 'primary' : 'default'}
+                                    onClick={() => setBatchProviders((prev: Set<'deemix' | 'slskd' | 'squidwtf'>) => {
+                                        const next = new Set(prev);
+                                        on ? next.delete(p) : next.add(p);
+                                        return next;
+                                    })}
+                                    sx={{ cursor: 'pointer', height: 22, fontSize: '0.65rem' }}
+                                />
+                            );
+                        })}
+                    </Box>
 
-                <Divider orientation="vertical" flexItem />
-
-                {/* Qualities */}
-                <Box>
-                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>
-                        Qualities
+                    <Typography variant="caption" color="text.disabled" sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        Quality
                     </Typography>
-                    <FormGroup row sx={{ gap: 0.25 }}>
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                         {(
                             [
-                                { id: 'flac',   label: 'FLAC',          desc: 'Lossless' },
-                                { id: 'high',   label: 'High Lossy',    desc: '≥ 192 kbps' },
-                                { id: 'medium', label: 'Med. Lossy',    desc: '96–191 kbps' },
-                                { id: 'low',    label: 'Low Lossy',     desc: '< 96 kbps' },
+                                { id: 'flac',   label: 'FLAC',        desc: 'Lossless'    },
+                                { id: 'high',   label: 'High Lossy',  desc: '≥ 192 kbps'  },
+                                { id: 'medium', label: 'Med. Lossy',  desc: '96–191 kbps' },
+                                { id: 'low',    label: 'Low Lossy',   desc: '< 96 kbps'   },
                             ] as const
-                        ).map(({ id, label, desc }) => (
-                            <FormControlLabel
-                                key={id}
-                                sx={{ mr: 1, ml: 0 }}
-                                control={
-                                    <Checkbox
+                        ).map(({ id, label, desc }) => {
+                            const on = batchTiers.has(id);
+                            return (
+                                <Tooltip key={id} title={desc} placement="top">
+                                    <Chip
+                                        label={label}
                                         size="small"
-                                        checked={batchTiers.has(id)}
-                                        onChange={(e: { target: { checked: boolean } }) =>
-                                            setBatchTiers((prev: Set<string>) => {
-                                                const next = new Set(prev);
-                                                e.target.checked ? next.add(id) : next.delete(id);
-                                                return next;
-                                            })
-                                        }
+                                        variant={on ? 'filled' : 'outlined'}
+                                        color={on ? 'info' : 'default'}
+                                        onClick={() => setBatchTiers((prev: Set<string>) => {
+                                            const next = new Set(prev);
+                                            on ? next.delete(id) : next.add(id);
+                                            return next;
+                                        })}
+                                        sx={{ cursor: 'pointer', height: 22, fontSize: '0.65rem' }}
                                     />
-                                }
-                                label={
-                                    <Tooltip title={desc} placement="top">
-                                        <Typography variant="caption">{label}</Typography>
-                                    </Tooltip>
-                                }
-                            />
-                        ))}
-                    </FormGroup>
+                                </Tooltip>
+                            );
+                        })}
+                    </Box>
                 </Box>
 
                 {/* Status feedback */}
                 {(batchMutation.isError || batchMutation.data) && (
-                    <>
-                        <Divider orientation="vertical" flexItem />
-                        <Box>
-                            {batchMutation.isError && (
-                                <Typography variant="caption" color="error.main">
-                                    {(batchMutation.error as Error)?.message ?? 'Batch scheduling failed'}
-                                </Typography>
-                            )}
-                            {batchMutation.data && (
-                                <Typography variant="caption" color="text.secondary">
-                                    Queued {batchMutation.data.queued}/{batchMutation.data.requested}
-                                </Typography>
-                            )}
-                        </Box>
-                    </>
+                    <Typography variant="caption" color={batchMutation.isError ? 'error.main' : 'text.secondary'} sx={{ ml: 0.5 }}>
+                        {batchMutation.isError
+                            ? ((batchMutation.error as Error)?.message ?? 'Batch scheduling failed')
+                            : batchMutation.data
+                              ? `Queued ${batchMutation.data.queued}/${batchMutation.data.requested}`
+                              : null}
+                    </Typography>
                 )}
 
             </Box>
@@ -1700,8 +1701,9 @@ function MissingAlbumsViewer({
                 <Box key={type} sx={{ mb: 3 }}>
                     {(() => {
                         const typeEntries = grouped.get(type) ?? [];
-                        const typeSelected = typeEntries.filter((e) => selectedIds.has(e.id)).length;
-                        const allTypeSelected = typeEntries.length > 0 && typeSelected === typeEntries.length;
+                        const typeDownloadable = typeEntries.filter((e: { id: string; album: MissingAlbum }) => !e.album.library_album_id);
+                        const typeSelected = typeDownloadable.filter((e: { id: string; album: MissingAlbum }) => selectedIds.has(e.id)).length;
+                        const allTypeSelected = typeDownloadable.length > 0 && typeSelected === typeDownloadable.length;
                         const typeIndeterminate = typeSelected > 0 && !allTypeSelected;
 
                         return (
@@ -1729,9 +1731,9 @@ function MissingAlbumsViewer({
                                             setSelectedIds((prev) => {
                                                 const next = new Set(prev);
                                                 if (allTypeSelected) {
-                                                    typeEntries.forEach((e) => next.delete(e.id));
+                                                    typeDownloadable.forEach((e: { id: string; album: MissingAlbum }) => next.delete(e.id));
                                                 } else {
-                                                    typeEntries.forEach((e) => next.add(e.id));
+                                                    typeDownloadable.forEach((e: { id: string; album: MissingAlbum }) => next.add(e.id));
                                                 }
                                                 return next;
                                             });
@@ -1750,7 +1752,7 @@ function MissingAlbumsViewer({
                                 <TableCell sx={{ width: 40 }} />
                                 <TableCell sx={{ width: 40 }} />
                                 <TableCell sx={{ pl: 1 }}>Album</TableCell>
-                                <TableCell sx={{ width: 52 }} />
+                                <TableCell sx={{ width: 44 }} />
                                 <TableCell sx={{ width: 56, textAlign: 'center' }}><DownloadIcon size={13} style={{ opacity: 0.5 }} /></TableCell>
                             </TableRow>
                         </TableHead>
@@ -1769,42 +1771,77 @@ function MissingAlbumsViewer({
                                     : album.mb_releasegroupid?.startsWith('deezer:')
                                       ? album.mb_releasegroupid.slice(7)
                                       : null;
+                                // "release:{id}" prefix → link to MB release page (library albums without release group ID).
                                 const mbUrl = isMbEntry
-                                    ? `https://musicbrainz.org/release-group/${album.mb_releasegroupid}`
+                                    ? album.mb_releasegroupid!.startsWith('release:')
+                                        ? `https://musicbrainz.org/release/${album.mb_releasegroupid!.slice(8)}`
+                                        : `https://musicbrainz.org/release-group/${album.mb_releasegroupid}`
                                     : null;
                                 const deezerUrl = deezerIdStr
                                     ? `https://www.deezer.com/album/${deezerIdStr}`
+                                    : null;
+                                const isLibrary = Boolean(album.library_album_id);
+                                const qualityLabel = isLibrary && album.library_album_id
+                                    ? computeQualityLabel(itemsByAlbumId?.get(album.library_album_id) ?? [])
                                     : null;
                                 return (
                                     <>
                                         <TableRow
                                             key={`${rowId}-row`}
                                             hover
-                                            sx={{ cursor: album.mb_releasegroupid ? 'pointer' : 'default' }}
+                                            sx={{ cursor: 'pointer', '&:hover .lib-play-overlay': { opacity: 1 } }}
                                             onClick={() => {
-                                                if (!album.mb_releasegroupid) return;
-                                                setExpandedId(isExpanded ? null : rowId);
+                                                if (isLibrary) {
+                                                    void navigate({ to: '/library/album/$albumId', params: { albumId: album.library_album_id! } });
+                                                } else if (album.mb_releasegroupid && !album.mb_releasegroupid.startsWith('release:')) {
+                                                    setExpandedId(isExpanded ? null : rowId);
+                                                }
                                             }}
                                         >
-                                            {/* Checkbox */}
-                                            <TableCell sx={{ p: 0.5, width: 40 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
-                                                <Checkbox
-                                                    size="small"
-                                                    checked={isSelected}
-                                                    onChange={() => {
-                                                        setSelectedIds((prev) => {
-                                                            const next = new Set(prev);
-                                                            if (next.has(rowId)) next.delete(rowId);
-                                                            else next.add(rowId);
-                                                            return next;
-                                                        });
-                                                    }}
-                                                />
+                                            {/* Checkbox / play-pause for library albums */}
+                                            <TableCell sx={{ p: 0.5, width: 40, textAlign: 'center' }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
+                                                {isLibrary ? (() => {
+                                                    const albumPlaying = playing && currentItem?.album_id === album.library_album_id;
+                                                    return (
+                                                        <IconButton
+                                                            size="small"
+                                                            onClick={() => {
+                                                                if (albumPlaying) {
+                                                                    togglePlaying();
+                                                                } else {
+                                                                    playLibraryAlbum(album.library_album_id!, { stopPropagation: () => {} });
+                                                                }
+                                                            }}
+                                                            sx={{ p: 0.5, color: albumPlaying ? 'primary.main' : 'text.secondary', display: 'inline-flex' }}
+                                                        >
+                                                            {albumPlaying
+                                                                ? <PauseIcon size={16} fill="currentColor" />
+                                                                : <PlayIcon size={16} />}
+                                                        </IconButton>
+                                                    );
+                                                })() : (
+                                                    <Checkbox
+                                                        size="small"
+                                                        checked={isSelected}
+                                                        onChange={() => {
+                                                            setSelectedIds((prev: Set<string>) => {
+                                                                const next = new Set(prev);
+                                                                if (next.has(rowId)) next.delete(rowId);
+                                                                else next.add(rowId);
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    />
+                                                )}
                                             </TableCell>
 
                                             {/* Cover */}
                                             <TableCell sx={{ p: 0.5, width: 40 }}>
-                                                {album.cover_url ? (
+                                                {isLibrary ? (
+                                                    <Box sx={{ width: 32, height: 32, flexShrink: 0, borderRadius: 0.5, overflow: 'hidden', '& img': { width: 32, height: 32, objectFit: 'cover', display: 'block' } }}>
+                                                        <CoverArt type="album" beetsId={album.library_album_id as number} />
+                                                    </Box>
+                                                ) : album.cover_url ? (
                                                     <Box component="img" src={album.cover_url} alt={album.album}
                                                         sx={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 0.5, display: 'block' }}
                                                         loading="lazy"
@@ -1819,25 +1856,48 @@ function MissingAlbumsViewer({
                                             {/* Album name + year/tracks inline */}
                                             <TableCell sx={{ pl: 1, py: 0.75 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.2 }}>
-                                                    {album.mb_releasegroupid && (
-                                                        isExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />
-                                                    )}
-                                                    <Typography variant="body2" fontWeight={600} sx={{ lineHeight: 1.3 }}>
+                                                    {isLibrary ? (
+                                                        <Tooltip title="In library">
+                                                            <Box component="span" sx={{ display: 'flex', color: 'success.main', flexShrink: 0 }}>
+                                                                <CheckIcon size={11} />
+                                                            </Box>
+                                                        </Tooltip>
+                                                    ) : album.mb_releasegroupid ? (
+                                                        <Box component="span" sx={{ display: 'flex', flexShrink: 0 }}>
+                                                            {isExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+                                                        </Box>
+                                                    ) : null}
+                                                    <Typography variant="body2" fontWeight={600} sx={{
+                                                        lineHeight: 1.3,
+                                                        overflow: 'hidden',
+                                                        display: '-webkit-box',
+                                                        WebkitLineClamp: 2,
+                                                        WebkitBoxOrient: 'vertical',
+                                                    }}>
                                                         {album.album}
                                                     </Typography>
                                                 </Box>
-                                                <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', pl: album.mb_releasegroupid ? 2.5 : 0 }}>
+                                                <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap', pl: (isLibrary || album.mb_releasegroupid) ? 2.5 : 0 }}>
                                                     <Typography variant="caption" color="text.disabled" component="span">
                                                         <MissingAlbumTrackCount album={album} /> tracks
                                                     </Typography>
                                                     {album.year && (
                                                         <Typography variant="caption" color="text.disabled">· {album.year}</Typography>
                                                     )}
+                                                    {qualityLabel && (
+                                                        <Chip
+                                                            label={qualityLabel}
+                                                            size="small"
+                                                            color={qualityColor(qualityLabel)}
+                                                            variant="outlined"
+                                                            sx={{ height: 16, fontSize: 10, fontWeight: 700, '& .MuiChip-label': { px: 0.75 } }}
+                                                        />
+                                                    )}
                                                 </Box>
                                             </TableCell>
 
                                             {/* External links with brand icons */}
-                                            <TableCell sx={{ p: 0.5, width: 52 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
+                                            <TableCell sx={{ p: 0, pr: 0.5, width: 44 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
                                                 <Box sx={{ display: 'flex', gap: 0, justifyContent: 'flex-end' }}>
                                                     {mbUrl && (
                                                         <Tooltip title="Open on MusicBrainz">
@@ -1860,10 +1920,26 @@ function MissingAlbumsViewer({
                                                 </Box>
                                             </TableCell>
 
-                                            {/* Download */}
+                                            {/* Download for missing / Delete for library */}
                                             <TableCell sx={{ p: 0.5, width: 56, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                                                 <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-                                                <DownloadButton album={album} artist={artist} />
+                                                    {isLibrary ? (
+                                                        <Tooltip title="Remove from library and delete files">
+                                                            <span>
+                                                                <IconButton
+                                                                    size="small"
+                                                                    color="error"
+                                                                    onClick={() => setPendingDelete(album)}
+                                                                    disabled={deleteMutation.isPending}
+                                                                    sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
+                                                                >
+                                                                    <Trash2 size={14} />
+                                                                </IconButton>
+                                                            </span>
+                                                        </Tooltip>
+                                                    ) : (
+                                                        <DownloadButton album={album} artist={artist} />
+                                                    )}
                                                 </Box>
                                             </TableCell>
                                         </TableRow>
@@ -1884,5 +1960,37 @@ function MissingAlbumsViewer({
                 </Box>
             ))}
         </Box>
+
+        {/* Delete confirmation dialog */}
+        <Dialog open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} maxWidth="xs" fullWidth>
+            <DialogTitle>Remove album?</DialogTitle>
+            <DialogContent>
+                <Typography variant="body2">
+                    <strong>{pendingDelete?.album}</strong> will be removed from your library and its files permanently deleted from disk.
+                </Typography>
+                {deleteMutation.isError && (
+                    <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 1 }}>
+                        {(deleteMutation.error as Error)?.message ?? 'Deletion failed'}
+                    </Typography>
+                )}
+            </DialogContent>
+            <DialogActions>
+                <Button size="small" onClick={() => setPendingDelete(null)} disabled={deleteMutation.isPending}>
+                    Cancel
+                </Button>
+                <Button
+                    size="small"
+                    color="error"
+                    variant="contained"
+                    disableElevation
+                    disabled={deleteMutation.isPending}
+                    onClick={() => pendingDelete?.library_album_id && deleteMutation.mutate(pendingDelete.library_album_id)}
+                    startIcon={deleteMutation.isPending ? <CircularProgress size={14} /> : <Trash2 size={14} />}
+                >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+                </Button>
+            </DialogActions>
+        </Dialog>
+        </>
     );
 }

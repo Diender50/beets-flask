@@ -111,6 +111,7 @@ export function SplitButtonOptions({
         <>
             <ButtonGroup
                 variant="contained"
+                size="small"
                 ref={anchorRef}
                 aria-label="split button"
                 {...props}
@@ -120,10 +121,11 @@ export function SplitButtonOptions({
                     onClick={handleMainButtonClick}
                     loading={loading}
                     sx={{
-                        minWidth: `${minWidth}px !important`, // Ensure the button has a minimum width
+                        minWidth: `${minWidth}px !important`,
+                        whiteSpace: 'nowrap',
                     }}
                 >
-                    <span>{selectedOption.label}</span>
+                    <span style={{ whiteSpace: 'nowrap' }}>{selectedOption.label}</span>
                 </Button>
                 <Button
                     onClick={handleToggle}
@@ -139,9 +141,9 @@ export function SplitButtonOptions({
 
             <Popper
                 sx={(theme) => ({
-                    zIndex: 1,
-                    width: `calc(${anchorRef.current?.clientWidth}px - ${theme.spacing(1)})`, // Adjust width to fit within the button group
-                    maxWidth: `calc(${anchorRef.current?.clientWidth}px - ${theme.spacing(1)})`, // Ensure max width matches the button group
+                    zIndex: 1300,
+                    width: `calc(${anchorRef.current?.clientWidth}px - ${theme.spacing(1)})`,
+                    maxWidth: `calc(${anchorRef.current?.clientWidth}px - ${theme.spacing(1)})`,
                     overflow: 'hidden',
                     boxShadow: 8,
                 })}
@@ -149,6 +151,7 @@ export function SplitButtonOptions({
                 open={open}
                 anchorEl={anchorRef.current}
                 role={undefined}
+                placement="top"
                 transition
             >
                 {({ TransitionProps, placement }) => (
