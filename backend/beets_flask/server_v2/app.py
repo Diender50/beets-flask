@@ -13,11 +13,11 @@ from .json_encoder import CustomJSONResponse
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    import beets_flask.database.setup as _db
     from beets_flask.config.flask_config import init_server_config
-    from beets_flask.database.setup import session_factory, setup_database
 
     init_server_config(os.getenv("BEETSFLASK_ENV", None))
-    setup_database()
+    _db.setup_database()
 
     warm_enabled = os.getenv("BEETSFLASK_WARM_MISSING_ON_START", "1").strip().lower() not in {
         "0",
@@ -54,7 +54,8 @@ async def _lifespan(app: FastAPI):
 
     yield
 
-    session_factory.remove()
+    if hasattr(_db, "session_factory"):
+        _db.session_factory.remove()
     log.debug("FastAPI app shutdown.")
 
 
