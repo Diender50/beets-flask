@@ -1,9 +1,6 @@
 import { createContext, useContext, useMemo } from 'react';
 import {
     Box,
-    Card,
-    CardActions,
-    CardContent,
     Tooltip,
     Typography,
 } from '@mui/material';
@@ -16,7 +13,6 @@ import {
 import { walkFolder } from '@/api/inbox';
 import { sessionQueryOptions } from '@/api/session';
 import { InboxTypeIcon } from '@/components/common/icons';
-import { CardHeader } from '@/components/frontpage/statsCard';
 import {
     ArchiveComponent,
     FileComponent,
@@ -119,40 +115,19 @@ export function InboxCardProvider({
 export function InboxCard({ folder }: { folder: Folder }) {
     return (
         <InboxCardProvider folder={folder}>
-            <Card
-                sx={(theme) => ({
+            <Box
+                sx={{
                     width: '100%',
-                    padding: 2,
-                    // Content (file tree)
-                    '.MuiCardContent-root': {
-                        margin: 0,
-                        marginTop: 1,
-                        paddingInline: 1,
-                        paddingBlock: 1.5,
-                    },
-
-                    // Actions (buttons)
-                    '.MuiCardActions-root': {
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 1,
-                    },
-
-                    // Remove some padding on very small screens
-                    [theme.breakpoints.down('tablet')]: {
-                        padding: 1,
-                        paddingInline: 0,
-                        '.MuiCardContent-root': {
-                            paddingInline: 0.5,
-                        },
-                        '.MuiCardActions-root': {},
-                    },
-                })}
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    overflow: 'hidden',
+                }}
             >
                 <InboxCardHeader />
                 <InboxCardContent />
                 <InboxCardActions />
-            </Card>
+            </Box>
         </InboxCardProvider>
     );
 }
@@ -182,75 +157,39 @@ function InboxCardHeader() {
     }
 
     return (
-        <CardHeader
-            key={folder.full_path}
-            icon={
-                <Tooltip title={tooltip}>
-                    <InboxTypeIcon
-                        size={24}
-                        type={folderConfig.autotag || undefined}
-                    />
-                </Tooltip>
-            }
-            dividerPos="70%"
-            color="secondary.main"
+        <Box
+            sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                px: 2,
+                py: 1,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+            }}
         >
-            <Box
+            <Tooltip title={tooltip}>
+                <Box sx={{ display: 'flex', opacity: 0.6, flexShrink: 0 }}>
+                    <InboxTypeIcon size={16} type={folderConfig.autotag || undefined} />
+                </Box>
+            </Tooltip>
+            <Typography
+                variant="caption"
+                color="text.disabled"
                 sx={{
-                    display: 'flex',
-                    alignItems: 'flex-end',
-                    width: '100%',
-                    justifyContent: 'space-between',
-                    position: 'relative',
-                    paddingBottom: 2.5,
-                    paddingLeft: 1,
+                    flex: 1,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontFamily: 'monospace',
                 }}
             >
-                {/* file path */}
-                <Box
-                    sx={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        flexDirection: 'row',
-                        alignItems: 'flex-end',
-                        width: '100%',
-
-                        columnGap: 0.5,
-                        rowGap: 0.1,
-                    }}
-                >
-                    {folderConfig.path
-                        .split('/')
-                        .filter(Boolean)
-                        .map((segment, idx, arr) => (
-                            <Typography
-                                variant="body2"
-                                key={idx}
-                                component="span"
-                                sx={{
-                                    display: 'inline-flex',
-                                    whiteSpace: 'nowrap',
-                                }}
-                            >
-                                {`/ ${segment}${idx === arr.length - 1 && folderConfig.path.endsWith('/') ? ' /' : ''}`}
-                            </Typography>
-                        ))}
-                </Box>
-
-                {/* inbox name */}
-                <Typography
-                    variant="body1"
-                    sx={{
-                        fontWeight: 'bold',
-                        flexShrink: 0,
-                        m: 0,
-                        p: 0,
-                    }}
-                >
-                    {folderConfig.name}
-                </Typography>
-            </Box>
-        </CardHeader>
+                {folderConfig.path}
+            </Typography>
+            <Typography variant="body2" fontWeight={600} sx={{ flexShrink: 0 }}>
+                {folderConfig.name}
+            </Typography>
+        </Box>
     );
 }
 
@@ -262,7 +201,7 @@ function InboxCardContent() {
     } = useInboxCardContext();
 
     return (
-        <CardContent>
+        <Box sx={{ px: 1, py: 1 }}>
             <GridWrapper config={gridTemplateColumns}>
                 {/* Only show inner folders */}
                 <InboxGridHeader inboxFolderConfig={folderConfig} />
@@ -307,7 +246,7 @@ function InboxCardContent() {
                     </Box>
                 )}
             </GridWrapper>
-        </CardContent>
+        </Box>
     );
 }
 
@@ -315,8 +254,8 @@ function InboxCardActions() {
     const { actionButtons } = useInboxCardContext();
 
     return (
-        <CardActions>
+        <Box sx={{ borderTop: '1px solid', borderColor: 'divider', px: 2, py: 1 }}>
             <InboxActions actionButtons={actionButtons} />
-        </CardActions>
+        </Box>
     );
 }

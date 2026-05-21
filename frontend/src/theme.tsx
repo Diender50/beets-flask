@@ -89,31 +89,31 @@ const darkTheme = createTheme({
         mode: 'dark',
         tonalOffset: 0.4,
         secondary: {
-            main: '#20F5F1',
-            light: '#6FF5F2',
-            muted: '#348F8D',
+            main: '#1DD8D5',
+            light: '#5CDBD8',
+            muted: '#2B7775',
             contrastText: '#000000',
         },
         primary: {
             // Complementary pink for secondary as compared to primary
-            main: '#ED41C3',
-            light: '#F5A0D5',
-            muted: '#A43F8C',
+            main: '#D63DB5',
+            light: '#E09AC8',
+            muted: '#8C3578',
             contrastText: '#000000',
         },
         text: {
-            primary: '#ffffff',
+            primary: '#E2E4E8',
             // overwriting secondary fixes the transparency (bad on icons)
-            secondary: '#ACB3B9',
+            secondary: '#8A9099',
         },
         action: {
             // hover: "#212529",
-            hover: '#3A3C3E',
+            hover: '#242628',
             selected: '#7C848E22',
         },
         background: {
-            default: '#000000',
-            paper: '#181A1C',
+            default: '#0C0E11',
+            paper: '#141618',
         },
         diffs: {
             // added: "#a4bf8c",

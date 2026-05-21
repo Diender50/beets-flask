@@ -1,232 +1,106 @@
 import {
     ChevronRight,
-    HardDriveIcon,
     InboxIcon,
     LibraryIcon,
-    TimerIcon,
 } from 'lucide-react';
 import { ReactNode } from 'react';
 import {
     Avatar,
     Box,
     BoxProps,
-    Button,
-    Card,
-    CardContent,
     Divider,
     Typography,
 } from '@mui/material';
 import { Link } from '@tanstack/react-router';
 
 import { LibraryStats } from '@/api/library';
-import { FolderStatus, InboxStats } from '@/pythonTypes';
+import { InboxStats } from '@/pythonTypes';
 
-import { FolderStatusIcon, PenaltyTypeIcon } from '../common/icons';
 import { humanizeBytes } from '../common/units/bytes';
 import { humanizeDuration, relativeTime } from '../common/units/time';
 
-export function LibraryStatsCard({
-    libraryStats,
-}: {
-    libraryStats: LibraryStats;
-}) {
+const Dot = () => (
+    <Box component="span" sx={{ color: 'text.disabled', mx: 0.5, userSelect: 'none' }}>·</Box>
+);
+
+export function LibraryStatsCard({ libraryStats }: { libraryStats: LibraryStats }) {
     return (
-        <Card sx={{ padding: 2 }}>
-            {/* Top bar with accent */}
-            <CardHeader icon={<LibraryIcon size={36} />} size="large">
-                <Typography
-                    sx={{
-                        fontSize: 14,
-                        color: 'grey.600',
-                        whiteSpace: 'nowrap',
-                        letterSpacing: '1px',
-                    }}
-                >
-                    last import: {relativeTime(libraryStats.lastItemAdded)}
-                </Typography>
-            </CardHeader>
-            <CardContent
-                sx={{
-                    paddingInline: 1,
-                    paddingTop: 2,
-                    m: 0,
-                    paddingBottom: '0 !important',
-                }}
-            >
-                <ContentHeader
-                    title="Library"
-                    subtitle={libraryStats.libraryPath}
-                />
-                <Box
-                    sx={{
-                        display: 'flex',
-                        gap: 2,
-                        paddingTop: 2.5,
-                        flexWrap: 'wrap',
-                        // color for boarders
-                        color: 'primary.muted',
-                    }}
-                >
-                    <StatItem
-                        title="Total Runtime"
-                        icon={<TimerIcon />}
-                        value={humanizeDuration(libraryStats.runtime)}
-                    />
-                    <StatItem
-                        title="Size"
-                        icon={<HardDriveIcon />}
-                        value={humanizeBytes(libraryStats.size)}
-                    />
-                    <StatItem
-                        title="Items"
-                        icon={<PenaltyTypeIcon type="tracks" />}
-                        value={libraryStats.items}
-                    />
-                    <StatItem
-                        title="Albums"
-                        icon={<PenaltyTypeIcon type="album" />}
-                        value={libraryStats.albums}
-                    />
-                    <StatItem
-                        title="Artists"
-                        icon={<PenaltyTypeIcon type="artist" />}
-                        value={libraryStats.artists}
-                    />
-                    <StatItem
-                        title="Labels"
-                        icon={<PenaltyTypeIcon type="label" />}
-                        value={libraryStats.labels}
-                    />
-                </Box>
-                <Box
-                    sx={(theme) => ({
-                        paddingTop: 3,
-                        display: 'flex',
-                        gap: 2,
-                        fontWeight: 600,
-                        justifyContent: 'flex-end',
-                        minWidth: '200px',
-                        [theme.breakpoints.down('tablet')]: {
-                            '>*': {
-                                width: '100%',
-                            },
-                        },
-                    })}
-                >
-                    <Button
-                        variant="contained"
-                        color="primary"
-                        endIcon={<ChevronRight />}
-                        component={Link}
-                        to="/library/browse"
-                        size="large"
-                        sx={{
-                            fontWeight: 600,
-                        }}
-                    >
-                        Browse Library
-                    </Button>
-                </Box>
-            </CardContent>
-        </Card>
+        <Box
+            sx={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 0.5,
+                px: 1.5,
+                py: 1,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+                backgroundColor: 'background.paper',
+            }}
+        >
+            <LibraryIcon size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
+            <Typography variant="caption" fontWeight={600} sx={{ mr: 0.5 }}>Library</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{libraryStats.items} tracks</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{libraryStats.albums} albums</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{libraryStats.artists} artists</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{humanizeBytes(libraryStats.size)}</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{humanizeDuration(libraryStats.runtime)}</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.disabled">
+                imported {relativeTime(libraryStats.lastItemAdded)}
+            </Typography>
+        </Box>
     );
 }
 
 export function InboxStatsCard({ inboxStats }: { inboxStats: InboxStats }) {
     return (
-        <Card sx={{ padding: 2 }}>
-            <CardHeader
-                icon={<InboxIcon size={36} />}
-                color="secondary.main"
-                size="large"
-            >
-                <Typography
-                    sx={{
-                        fontSize: 14,
-                        color: 'grey.600',
-                        whiteSpace: 'nowrap',
-                        letterSpacing: '1px',
-                    }}
-                >
-                    last action: {relativeTime(inboxStats.last_created)}
-                </Typography>
-            </CardHeader>
-            <CardContent
-                sx={{
-                    paddingInline: 1,
-                    paddingTop: 2,
-                    m: 0,
-                    paddingBottom: '0 !important',
-                }}
-            >
-                <ContentHeader
-                    title={inboxStats.name}
-                    subtitle={inboxStats.path}
-                />
-                <Box
-                    sx={{
-                        display: 'flex',
-                        gap: 2,
-                        paddingTop: 2.5,
-                        flexWrap: 'wrap',
-                        color: 'secondary.muted',
-                    }}
-                >
-                    <StatItem
-                        title="Size"
-                        icon={<HardDriveIcon />}
-                        value={humanizeBytes(inboxStats.size)}
-                    />
-                    <StatItem
-                        title="Files"
-                        icon={<PenaltyTypeIcon type="tracks" />}
-                        value={inboxStats.nFiles}
-                    />
-                    <StatItem
-                        title="Tagged"
-                        icon={
-                            <FolderStatusIcon status={FolderStatus.PREVIEWED} />
-                        }
-                        value={inboxStats.tagged_via_gui}
-                    />
-                    <StatItem
-                        title="Imported"
-                        icon={
-                            <FolderStatusIcon status={FolderStatus.IMPORTED} />
-                        }
-                        value={inboxStats.imported_via_gui}
-                    />
-                </Box>
-                <Box
-                    sx={(theme) => ({
-                        paddingTop: 3,
-                        display: 'flex',
-                        gap: 2,
-                        fontWeight: 600,
-                        justifyContent: 'flex-end',
-                        [theme.breakpoints.down('tablet')]: {
-                            '>*': {
-                                width: '100%',
-                            },
-                        },
-                    })}
-                >
-                    <Button
-                        variant="contained"
-                        color="secondary"
-                        endIcon={<ChevronRight />}
-                        component={Link}
-                        to="/inbox"
-                        size="large"
-                        sx={{
-                            fontWeight: 600,
-                        }}
-                    >
-                        Show Inbox
-                    </Button>
-                </Box>
-            </CardContent>
-        </Card>
+        <Box
+            component={Link}
+            to="/inbox"
+            sx={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 0.5,
+                px: 1.5,
+                py: 1,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+                backgroundColor: 'background.paper',
+                textDecoration: 'none',
+                color: 'inherit',
+                '&:hover': { borderColor: 'secondary.main', opacity: 0.9 },
+                transition: 'border-color 0.2s',
+            }}
+        >
+            <InboxIcon size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
+            <Typography variant="caption" fontWeight={600} sx={{ mr: 0.5 }}>{inboxStats.name}</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{inboxStats.nFiles} files</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{inboxStats.tagged_via_gui} tagged</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{inboxStats.imported_via_gui} imported</Typography>
+            <Dot />
+            <Typography variant="caption" color="text.secondary">{humanizeBytes(inboxStats.size)}</Typography>
+            {inboxStats.last_created && (
+                <>
+                    <Dot />
+                    <Typography variant="caption" color="text.disabled">
+                        last activity {relativeTime(inboxStats.last_created)}
+                    </Typography>
+                </>
+            )}
+            <ChevronRight size={12} style={{ marginLeft: 'auto', opacity: 0.4, flexShrink: 0 }} />
+        </Box>
     );
 }
 

@@ -7,7 +7,7 @@ import {
     Dialog,
     DialogContent,
     DialogTitle,
-    Divider,
+
     FormControlLabel,
     IconButton,
     InputAdornment,
@@ -20,7 +20,7 @@ import {
     TextField,
     Tooltip,
     Typography,
-    useTheme,
+
 } from '@mui/material';
 import { UserRoundMinusIcon, UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon, RefreshCw } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
@@ -92,29 +92,13 @@ function RouteComponent() {
 
     return (
         <>
-            <ArtistsHeader
-                nArtists={displayedArtists.length}
-                onAddArtist={() => setFollowDialogOpen(true)}
-                sx={(theme) => ({
-                    [theme.breakpoints.down('laptop')]: {
-                        background: `linear-gradient(to bottom, transparent 0%, ${theme.palette.background.paper} 100%)`,
-                    },
-                })}
-            />
-            <Divider sx={{ backgroundColor: 'primary.muted' }} />
             <ArtistsListWrapper
                 artists={displayedArtists}
+                nArtists={displayedArtists.length}
                 albumArtistOnly={albumArtistOnly}
                 onAlbumArtistOnlyChange={setAlbumArtistOnly}
-                sx={(theme) => ({
-                    display: 'flex',
-                    flexDirection: 'column',
-                    height: '100%',
-                    overflow: 'hidden',
-                    [theme.breakpoints.down('laptop')]: {
-                        background: `linear-gradient(to bottom, ${theme.palette.background.paper} 0%, transparent 100%)`,
-                    },
-                })}
+                onAddArtist={() => setFollowDialogOpen(true)}
+                sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}
             />
             <FollowArtistDialog
                 open={followDialogOpen}
@@ -125,58 +109,20 @@ function RouteComponent() {
     );
 }
 
-function ArtistsHeader({
-    nArtists,
-    onAddArtist,
-    sx,
-    ...props
-}: { nArtists: number; onAddArtist: () => void } & BoxProps) {
-    const theme = useTheme();
-    return (
-        <Box
-            sx={[
-                {
-                    display: 'flex',
-                    gap: 2,
-                    alignItems: 'center',
-                    padding: 2,
-                },
-                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-                ...(Array.isArray(sx) ? sx : [sx]),
-            ]}
-            {...props}
-        >
-            <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-                <ArtistIcon size={40} color={theme.palette.primary.main} />
-            </Box>
-            <Box sx={{ flex: '1 1 auto' }}>
-                <Typography variant="h5" fontWeight="bold" lineHeight={1}>
-                    Browse Artists
-                </Typography>
-                <Typography variant="subtitle1" color="text.secondary">
-                    {nArtists} unique artists
-                </Typography>
-            </Box>
-            <Tooltip title="Follow artist">
-                <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={<UserRoundPlusIcon size={16} />}
-                    onClick={onAddArtist}
-                >
-                    Follow Artist
-                </Button>
-            </Tooltip>
-        </Box>
-    );
-}
-
 function ArtistsListWrapper({
     artists,
+    nArtists,
     albumArtistOnly,
     onAlbumArtistOnlyChange,
+    onAddArtist,
     ...props
-}: { artists: Array<Artist>; albumArtistOnly: boolean; onAlbumArtistOnlyChange: (v: boolean) => void } & BoxProps) {
+}: {
+    artists: Array<Artist>;
+    nArtists: number;
+    albumArtistOnly: boolean;
+    onAlbumArtistOnlyChange: (v: boolean) => void;
+    onAddArtist: () => void;
+} & BoxProps) {
     const [filter, setFilter] = useState<string>('');
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const queryClient = useQueryClient();
@@ -306,30 +252,70 @@ function ArtistsListWrapper({
 
     return (
         <Box {...props}>
+            {/* Header row: title + count + follow button */}
+            <Box
+                sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 2,
+                    py: 1.5,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                }}
+            >
+                <ArtistIcon size={16} style={{ opacity: 0.5 }} />
+                <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
+                    Artists
+                </Typography>
+                <Typography variant="caption" color="text.disabled">
+                    {nArtists}
+                </Typography>
+                <Tooltip title="Follow a new artist">
+                    <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<UserRoundPlusIcon size={14} />}
+                        onClick={onAddArtist}
+                        sx={(theme) => ({
+                            textTransform: 'none',
+                            fontSize: 12,
+                            [theme.breakpoints.down('tablet')]: {
+                                minWidth: 0, px: 1,
+                                '& .MuiButton-startIcon': { mr: 0 },
+                            },
+                        })}
+                    >
+                        <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
+                            Follow
+                        </Box>
+                    </Button>
+                </Tooltip>
+            </Box>
+
+            {/* Toolbar: search + switch + bulk actions */}
             <Box
                 sx={(theme) => ({
                     display: 'flex',
-                    gap: 2,
-                    width: '100%',
-                    padding: 2,
-                    flexWrap: 'wrap',
+                    gap: 1,
+                    px: 2,
+                    py: 1,
                     alignItems: 'center',
-                    [theme.breakpoints.down(500)]: {
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gap: 2,
-                    },
+                    flexWrap: 'wrap',
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    backgroundColor: 'background.paper',
                 })}
             >
                 <Search
                     value={filter}
                     setValue={setFilter}
                     size="small"
-                    sx={{
+                    sx={(theme) => ({
                         flex: '1 1 auto',
-                        maxWidth: 300,
-                        flexGrow: 1,
-                    }}
+                        maxWidth: 260,
+                        [theme.breakpoints.down('tablet')]: { maxWidth: '100%', flex: '1 1 100%' },
+                    })}
                 />
                 <FormControlLabel
                     control={
@@ -339,86 +325,62 @@ function ArtistsListWrapper({
                             onChange={(e) => onAlbumArtistOnlyChange(e.target.checked)}
                         />
                     }
-                    label={
-                        <Typography variant="body2" color="text.secondary">
-                            Album artists only
-                        </Typography>
-                    }
+                    label={<Typography variant="caption" color="text.secondary">Album artists</Typography>}
+                    sx={{ m: 0, mr: 'auto' }}
                 />
-                <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={handleFollowSelected}
-                    disabled={
-                        selectedToFollow.length === 0 ||
-                        followMutation.isPending ||
-                        bulkFollowMutation.isPending
-                    }
-                    startIcon={
-                        bulkFollowMutation.isPending ? (
-                            <CircularProgress size={14} />
-                        ) : (
-                            <UserRoundPlusIcon size={14} />
-                        )
-                    }
-                >
-                    Follow Selected ({selectedToFollow.length})
-                </Button>
-                <Button
-                    size="small"
-                    variant="outlined"
-                    color="error"
-                    onClick={handleUnfollowSelected}
-                    disabled={
-                        selectedToUnfollow.length === 0 ||
-                        unfollowMutation.isPending ||
-                        bulkUnfollowMutation.isPending
-                    }
-                    startIcon={
-                        bulkUnfollowMutation.isPending ? (
-                            <CircularProgress size={14} />
-                        ) : (
-                            <UserRoundMinusIcon size={14} />
-                        )
-                    }
-                >
-                    Unfollow Selected ({selectedToUnfollow.length})
-                </Button>
-                <Tooltip title="Recompute missing albums from MusicBrainz & Deezer for selected artists">
-                    <span>
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={handleRefreshMissingSelected}
-                            disabled={selected.size === 0 || bulkRefreshMissingMutation.isPending}
-                            startIcon={
-                                bulkRefreshMissingMutation.isPending
-                                    ? <CircularProgress size={14} />
-                                    : <RefreshCw size={14} />
-                            }
-                        >
-                            Refresh Missing ({selected.size})
-                        </Button>
-                    </span>
-                </Tooltip>
-                <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    visibility={nRemovedByFilter > 0 ? 'visible' : 'hidden'}
-                >
-                    {nRemovedByFilter}
-                    {' artist'}
-                    {nRemovedByFilter > 1 && 's'} hidden by filter
-                </Typography>
+                <Box sx={{ display: 'flex', gap: 0.75 }}>
+                    <Tooltip title={`Follow Selected (${selectedToFollow.length})`}>
+                        <span>
+                            <Button size="small" variant="outlined"
+                                onClick={handleFollowSelected}
+                                disabled={selectedToFollow.length === 0 || followMutation.isPending || bulkFollowMutation.isPending}
+                                sx={(theme) => ({ textTransform: 'none', fontSize: 12, [theme.breakpoints.down('tablet')]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { mr: 0 } } })}
+                                startIcon={bulkFollowMutation.isPending ? <CircularProgress size={12} /> : <UserRoundPlusIcon size={12} />}
+                            >
+                                <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
+                                    Follow ({selectedToFollow.length})
+                                </Box>
+                            </Button>
+                        </span>
+                    </Tooltip>
+                    <Tooltip title={`Unfollow Selected (${selectedToUnfollow.length})`}>
+                        <span>
+                            <Button size="small" variant="outlined" color="error"
+                                onClick={handleUnfollowSelected}
+                                disabled={selectedToUnfollow.length === 0 || unfollowMutation.isPending || bulkUnfollowMutation.isPending}
+                                sx={(theme) => ({ textTransform: 'none', fontSize: 12, [theme.breakpoints.down('tablet')]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { mr: 0 } } })}
+                                startIcon={bulkUnfollowMutation.isPending ? <CircularProgress size={12} /> : <UserRoundMinusIcon size={12} />}
+                            >
+                                <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
+                                    Unfollow ({selectedToUnfollow.length})
+                                </Box>
+                            </Button>
+                        </span>
+                    </Tooltip>
+                    <Tooltip title={`Refresh missing albums for selected (${selected.size})`}>
+                        <span>
+                            <Button size="small" variant="outlined"
+                                onClick={handleRefreshMissingSelected}
+                                disabled={selected.size === 0 || bulkRefreshMissingMutation.isPending}
+                                sx={(theme) => ({ textTransform: 'none', fontSize: 12, [theme.breakpoints.down('tablet')]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { mr: 0 } } })}
+                                startIcon={bulkRefreshMissingMutation.isPending ? <CircularProgress size={12} /> : <RefreshCw size={12} />}
+                            >
+                                <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
+                                    Refresh ({selected.size})
+                                </Box>
+                            </Button>
+                        </span>
+                    </Tooltip>
+                </Box>
+                {nRemovedByFilter > 0 && (
+                    <Typography variant="caption" color="text.disabled" sx={{ width: '100%' }}>
+                        {nRemovedByFilter} artist{nRemovedByFilter > 1 ? 's' : ''} hidden by filter
+                    </Typography>
+                )}
             </Box>
-            <Box
-                sx={{
-                    overflow: 'auto',
-                    flex: '1 1 auto',
-                    paddingInline: 2,
-                    minHeight: 0,
-                }}
-            >
+
+            {/* Table */}
+            <Box sx={{ overflow: 'auto', flex: '1 1 auto', minHeight: 0 }}>
                 <ArtistsTable
                     artists={filteredData}
                     selected={selected}
@@ -426,13 +388,11 @@ function ArtistsListWrapper({
                     onToggleSelectAll={handleToggleSelectAll}
                     onFollowArtist={handleFollowOne}
                     isFollowingArtist={(artistName) =>
-                        followMutation.isPending &&
-                        followMutation.variables === artistName
+                        followMutation.isPending && followMutation.variables === artistName
                     }
                     onUnfollowArtist={handleUnfollowOne}
                     isUnfollowingArtist={(artistName) =>
-                        unfollowMutation.isPending &&
-                        unfollowMutation.variables === artistName
+                        unfollowMutation.isPending && unfollowMutation.variables === artistName
                     }
                     disableActions={bulkFollowMutation.isPending || bulkUnfollowMutation.isPending}
                 />

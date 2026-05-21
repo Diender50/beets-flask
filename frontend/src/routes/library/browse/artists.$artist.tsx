@@ -27,10 +27,7 @@ import {
     TableHead,
     TableRow,
     Tooltip,
-    ToggleButton,
-    ToggleButtonGroup,
     Typography,
-    useTheme,
 } from '@mui/material';
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PlayIcon, RefreshCw, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -62,6 +59,7 @@ import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { CoverArt } from '@/components/library/coverArt';
 import { useAudioContext } from '@/components/library/audio/context';
+import { PageWrapper } from '@/components/common/page';
 
 export const Route = createFileRoute('/library/browse/artists/$artist')({
     loader: async (opts) => {
@@ -90,92 +88,59 @@ function RouteComponent() {
     );
 
     return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100%', height: '100%' }}>
-            <ArtistHeader
-                sx={(theme) => ({
-                    [theme.breakpoints.down('laptop')]: {
-                        background: `linear-gradient(to bottom, transparent 0%, ${theme.palette.background.paper} 100%)`,
-                    },
-                })}
-            />
-            <Divider sx={{ backgroundColor: 'primary.muted' }} />
+        <PageWrapper sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+            <ArtistHeader />
             <Viewer
                 albums={albums}
                 items={items}
                 artist={params.artist}
-                sx={(theme) => ({
-                    flex: '1 1 auto',
-                    minHeight: 0,
-                    height: '100%',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'visible',
-                    [theme.breakpoints.down('laptop')]: {
-                        background: `linear-gradient(to bottom, ${theme.palette.background.paper} 0%, transparent 100%)`,
-                    },
-                })}
+                sx={{ flex: '1 1 auto', minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
             />
-        </Box>
+        </PageWrapper>
     );
 }
 
-function ArtistHeader({ sx, ...props }: BoxProps) {
+function ArtistHeader() {
     const params = Route.useParams();
     const { data: artist } = useSuspenseQuery(artistQueryOptions(params.artist));
 
-    const theme = useTheme();
-
-    const nAlbums = artist.album_count;
-    const nTracks = artist.item_count;
-
     return (
         <Box
-            sx={[
-                {
-                    display: 'flex',
-                    gap: 2,
-                    alignItems: 'center',
-                    padding: 2,
-                },
-                ...(Array.isArray(sx) ? sx : [sx]),
-            ]}
-            {...props}
+            sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                px: 2,
+                py: 1.5,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                flexShrink: 0,
+            }}
         >
-            <Link to="/library/browse/artists">
-                <Box
-                    sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        height: '100%',
-                    }}
-                >
-                    <ArtistIcon size={40} color={theme.palette.primary.main} />
-                </Box>
+            {/* Breadcrumb */}
+            <Link to="/library/browse/artists" style={{ display: 'flex', alignItems: 'center', opacity: 0.5, textDecoration: 'none', color: 'inherit' }}>
+                <ArtistIcon size={14} />
             </Link>
-            <Box>
-                <Typography variant="h5" fontWeight="bold" lineHeight={1}>
-                    {artist.artist}
-                </Typography>
-                <Box
-                    sx={{
-                        display: 'flex',
-                        gap: 2,
-                        p: 0.5,
-                        color: 'text.secondary',
-                    }}
-                >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                        <AlbumIcon size={theme.iconSize.md} />
-                        <Typography variant="body2">
-                            {nAlbums} Album{nAlbums !== 1 ? 's' : ''}
-                        </Typography>
-                    </Box>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                        <TrackIcon size={theme.iconSize.md} />
-                        <Typography variant="body2">
-                            {nTracks} Track{nTracks !== 1 ? 's' : ''}
-                        </Typography>
-                    </Box>
+            <Typography variant="caption" color="text.disabled">/</Typography>
+
+            {/* Artist name */}
+            <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1, lineHeight: 1.2 }}>
+                {artist.artist}
+            </Typography>
+
+            {/* Stats */}
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <AlbumIcon size={12} style={{ opacity: 0.5 }} />
+                    <Typography variant="caption" color="text.secondary">
+                        {artist.album_count} album{artist.album_count !== 1 ? 's' : ''}
+                    </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <TrackIcon size={12} style={{ opacity: 0.5 }} />
+                    <Typography variant="caption" color="text.secondary">
+                        {artist.item_count} track{artist.item_count !== 1 ? 's' : ''}
+                    </Typography>
                 </Box>
             </Box>
         </Box>
@@ -193,7 +158,6 @@ function Viewer({
     items: Item<false>[];
     artist: string;
 } & BoxProps) {
-    const theme = useTheme();
     const queryClient = useQueryClient();
     const [selected, setSelected] = useState<'albums' | 'missing'>('albums');
     const [filter, setFilter] = useState('');
@@ -305,140 +269,82 @@ function Viewer({
     return (
         <Box
             sx={[
-                {
-                    display: 'flex',
-                    flexDirection: 'column',
-                    minHeight: 0,
-                    height: '100%',
-                    overflow: 'hidden',
-                },
+                { display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' },
                 ...(Array.isArray(sx) ? sx : [sx]),
             ]}
             {...props}
         >
+            {/* Toolbar */}
             <Box
                 sx={{
-                    width: '100%',
-                    padding: 2,
-                    height: 'min-content',
-                    overflow: 'visible',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 2,
+                    py: 1,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    flexWrap: 'wrap',
+                    flexShrink: 0,
                 }}
             >
-                <Box
-                    sx={{
-                        display: 'flex',
-                        gap: 2,
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        flexWrap: 'wrap',
-                    }}
-                >
-                    <Search
-                        value={filter}
-                        setValue={setFilter}
+                <Search value={filter} setValue={setFilter} size="small" sx={{ flex: '1 1 auto', maxWidth: 260 }} />
+
+                {/* Tab switcher */}
+                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                    <Button
                         size="small"
-                        sx={{
-                            flex: '1 1 auto',
-                            maxWidth: 300,
-                        }}
-                    />
-                    <Box
-                        sx={{
-                            display: 'flex',
-                            gap: 1,
-                            alignItems: 'center',
-                        }}
+                        variant={selected === 'albums' ? 'contained' : 'text'}
+                        disableElevation
+                        onClick={() => setSelected('albums')}
+                        startIcon={<AlbumIcon size={14} />}
+                        sx={{ textTransform: 'none', fontSize: 12 }}
                     >
-                        <ToggleButtonGroup
-                            value={selected}
-                            onChange={(
-                                _e: React.MouseEvent<HTMLElement>,
-                                v: 'albums' | 'missing' | null
-                            ) => {
-                                if (v) setSelected(v);
-                            }}
-                            color="primary"
-                            exclusive
-                            aria-label="Filter type"
-                        >
-                            <ToggleButton value="albums">
-                                <AlbumIcon size={theme.iconSize.lg} />
-                            </ToggleButton>
-                            <ToggleButton value="missing">
-                                {missingAlbumsQuery.data ? (
-                                    <Badge
-                                        badgeContent={missingAlbums.length}
-                                        color="error"
-                                        max={99}
-                                        sx={{ '& .MuiBadge-badge': { fontSize: 10, height: 16, minWidth: 16 } }}
-                                    >
-                                        <Typography variant="body2" sx={{ pr: missingAlbums.length > 0 ? 1 : 0 }}>
-                                            Missing
-                                        </Typography>
-                                    </Badge>
-                                ) : (
-                                    <Typography variant="body2">Missing</Typography>
-                                )}
-                            </ToggleButton>
-                        </ToggleButtonGroup>
-                        {selected === 'missing' && (
-                            <Tooltip title="Recompute from MusicBrainz & Deezer (bypass cache)">
-                                <IconButton
-                                    size="small"
-                                    onClick={() => void handleRefreshMissing()}
-                                    disabled={isRefreshing || missingAlbumsQuery.isLoading}
-                                >
-                                    {isRefreshing
-                                        ? <CircularProgress size={16} />
-                                        : <RefreshCw size={16} />}
-                                </IconButton>
-                            </Tooltip>
-                        )}
-                    </Box>
-                </Box>
-                {selected === 'albums' && albumTypes.length > 1 && (
-                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 1 }}>
-                        <Chip
-                            label="All"
+                        Albums
+                    </Button>
+                    <Badge
+                        badgeContent={missingAlbums.length}
+                        color="error"
+                        max={99}
+                        sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 14, minWidth: 14, top: 2, right: -2 } }}
+                    >
+                        <Button
                             size="small"
-                            variant={albumTypeFilter === null ? 'filled' : 'outlined'}
-                            color={albumTypeFilter === null ? 'primary' : 'default'}
-                            onClick={() => setAlbumTypeFilter(null)}
-                        />
+                            variant={selected === 'missing' ? 'contained' : 'text'}
+                            disableElevation
+                            onClick={() => setSelected('missing')}
+                            sx={{ textTransform: 'none', fontSize: 12 }}
+                        >
+                            Missing
+                        </Button>
+                    </Badge>
+                    {selected === 'missing' && (
+                        <Tooltip title="Recompute from MusicBrainz & Deezer (bypass cache)">
+                            <IconButton size="small" onClick={() => void handleRefreshMissing()} disabled={isRefreshing || missingAlbumsQuery.isLoading} sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}>
+                                {isRefreshing ? <CircularProgress size={13} /> : <RefreshCw size={13} />}
+                            </IconButton>
+                        </Tooltip>
+                    )}
+                </Box>
+
+                {/* Type filter chips */}
+                {selected === 'albums' && albumTypes.length > 1 && (
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', width: '100%' }}>
+                        <Chip label="All" size="small" variant={albumTypeFilter === null ? 'filled' : 'outlined'} color={albumTypeFilter === null ? 'primary' : 'default'} onClick={() => setAlbumTypeFilter(null)} />
                         {albumTypes.map((type) => (
-                            <Chip
-                                key={type}
-                                label={type}
-                                size="small"
-                                variant={albumTypeFilter === type ? 'filled' : 'outlined'}
-                                color={albumTypeFilter === type ? 'primary' : 'default'}
-                                onClick={() =>
-                                    setAlbumTypeFilter(albumTypeFilter === type ? null : type)
-                                }
-                            />
+                            <Chip key={type} label={type} size="small" variant={albumTypeFilter === type ? 'filled' : 'outlined'} color={albumTypeFilter === type ? 'primary' : 'default'} onClick={() => setAlbumTypeFilter(albumTypeFilter === type ? null : type)} />
                         ))}
                     </Box>
                 )}
-                <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    visibility={nRemovedByFilter > 0 ? 'visible' : 'hidden'}
-                >
-                    {nRemovedByFilter}{' '}
-                    {nRemovedByFilter > 1
-                        ? selected
-                        : selected.replace('s', '')}{' '}
-                    hidden by filter
-                </Typography>
+
+                {nRemovedByFilter > 0 && (
+                    <Typography variant="caption" color="text.disabled" sx={{ width: '100%' }}>
+                        {nRemovedByFilter} hidden by filter
+                    </Typography>
+                )}
             </Box>
-            <Box
-                sx={{
-                    overflow: 'hidden',
-                    flex: '1 1 auto',
-                    paddingInline: 2,
-                    minHeight: 0,
-                }}
-            >
+
+            <Box sx={{ overflow: 'hidden', flex: '1 1 auto', px: 2, minHeight: 0 }}>
                 {selected === 'albums' && (
                     <AlbumsViewer albums={filteredAlbums} trackCountByAlbumId={trackCountByAlbumId} itemsByAlbumId={itemsByAlbumId} />
                 )}
@@ -517,25 +423,32 @@ function AlbumsViewer({
     return (
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
             {orderedTypes.map((type) => (
-                <Box key={type} sx={{ mb: 3 }}>
-                    <Typography
-                        variant="subtitle2"
-                        color="text.secondary"
+                <Box key={type} sx={{ mb: 2 }}>
+                    {/* Section header — same style as library page */}
+                    <Box
                         sx={{
-                            px: 1,
-                            py: 0.5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            py: 0.75,
+                            mb: 0.5,
                             position: 'sticky',
                             top: 0,
                             zIndex: 1,
-                            backgroundColor: 'background.paper',
-                            borderBottom: 1,
+                            backgroundColor: 'background.default',
+                            borderBottom: '1px solid',
                             borderColor: 'divider',
                         }}
                     >
-                        {RELEASE_TYPE_LABELS[type] ?? type} ({grouped.get(type)!.length})
-                    </Typography>
-                    <Table size="small">
-                        <TableHead>
+                        <Typography variant="caption" fontWeight={600} sx={{ textTransform: 'uppercase', letterSpacing: '0.05em', color: 'text.disabled', flex: 1 }}>
+                            {RELEASE_TYPE_LABELS[type] ?? type}
+                        </Typography>
+                        <Typography variant="caption" color="text.disabled">
+                            {grouped.get(type)!.length}
+                        </Typography>
+                    </Box>
+                    <Table size="small" sx={{ minWidth: 0 }}>
+                        <TableHead sx={{ display: 'none' }}>
                             <TableRow>
                                 <TableCell sx={{ width: 44 }} />
                                 <TableCell>Album</TableCell>
@@ -619,22 +532,12 @@ function FeaturedOnViewer({
     const navigate = useNavigate();
     return (
         <Box sx={{ mt: 2, mb: 3 }}>
-            <Typography
-                variant="subtitle2"
-                color="text.secondary"
-                sx={{
-                    px: 1,
-                    py: 0.5,
-                    position: 'sticky',
-                    top: 0,
-                    zIndex: 1,
-                    backgroundColor: 'background.paper',
-                    borderBottom: 1,
-                    borderColor: 'divider',
-                }}
-            >
-                Featured on ({featuredByAlbum.size})
-            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, mb: 0.5, position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'background.default', borderBottom: '1px solid', borderColor: 'divider' }}>
+                <Typography variant="caption" fontWeight={600} sx={{ textTransform: 'uppercase', letterSpacing: '0.05em', color: 'text.disabled', flex: 1 }}>
+                    Featured on
+                </Typography>
+                <Typography variant="caption" color="text.disabled">{featuredByAlbum.size}</Typography>
+            </Box>
             {[...featuredByAlbum.entries()].map(([albumId, entry]) => (
                 <Box key={albumId} sx={{ mb: 2 }}>
                     <Box
@@ -1188,28 +1091,30 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                         color={status === 'done' ? 'success' : status === 'error' ? 'error' : 'primary'}
                         onClick={openDialog}
                         disabled={mutation.isPending || status === 'pending' || status === 'downloading'}
-                        startIcon={
-                            mutation.isPending || status === 'pending' || status === 'downloading' ? (
-                                <CircularProgress size={12} />
-                            ) : status === 'done' ? (
-                                <CheckIcon size={14} />
-                            ) : status === 'error' ? (
-                                <XCircleIcon size={14} />
-                            ) : (
-                                <DownloadIcon size={14} />
-                            )
-                        }
                         sx={{
-                            minWidth: 86,
+                            minWidth: 0,
                             height: 28,
-                            px: 1,
+                            px: '6px',
                             borderRadius: 1,
                             fontSize: 11,
                             textTransform: 'none',
                             fontWeight: 700,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
                         }}
                     >
-                        {statusText}
+                        {mutation.isPending || status === 'pending' || status === 'downloading' ? (
+                            <CircularProgress size={12} />
+                        ) : status === 'done' ? (
+                            <CheckIcon size={14} />
+                        ) : status === 'error' ? (
+                            <XCircleIcon size={14} />
+                        ) : (
+                            <DownloadIcon size={14} />
+                        )}
+                        {statusText !== 'Ready' && statusText}
                     </Button>
                 </span>
             </Tooltip>
@@ -1657,6 +1562,7 @@ function MissingAlbumsViewer({
                     gap: 2,
                     px: 1.5,
                     py: 1,
+                    mt: 1.5,
                     mb: 1,
                     border: 1,
                     borderColor: 'divider',
@@ -1788,6 +1694,7 @@ function MissingAlbumsViewer({
                         </Box>
                     </>
                 )}
+
             </Box>
             {orderedTypes.map((type) => (
                 <Box key={type} sx={{ mb: 3 }}>
@@ -1843,8 +1750,8 @@ function MissingAlbumsViewer({
                                 <TableCell sx={{ width: 40 }} />
                                 <TableCell sx={{ width: 40 }} />
                                 <TableCell sx={{ pl: 1 }}>Album</TableCell>
-                                <TableCell sx={{ width: 68 }} />
-                                <TableCell sx={{ width: 92, textAlign: 'center' }}>Download</TableCell>
+                                <TableCell sx={{ width: 52 }} />
+                                <TableCell sx={{ width: 56, textAlign: 'center' }}><DownloadIcon size={13} style={{ opacity: 0.5 }} /></TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
@@ -1930,8 +1837,8 @@ function MissingAlbumsViewer({
                                             </TableCell>
 
                                             {/* External links with brand icons */}
-                                            <TableCell sx={{ p: 0.5, width: 68 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
-                                                <Box sx={{ display: 'flex', gap: 0.25 }}>
+                                            <TableCell sx={{ p: 0.5, width: 52 }} onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}>
+                                                <Box sx={{ display: 'flex', gap: 0, justifyContent: 'flex-end' }}>
                                                     {mbUrl && (
                                                         <Tooltip title="Open on MusicBrainz">
                                                             <IconButton size="small" component="a" href={mbUrl} target="_blank" rel="noopener noreferrer" sx={{ p: 0.5 }}>
@@ -1954,8 +1861,10 @@ function MissingAlbumsViewer({
                                             </TableCell>
 
                                             {/* Download */}
-                                            <TableCell sx={{ p: 0.5, width: 92, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                                            <TableCell sx={{ p: 0.5, width: 56, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                                                <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                                                 <DownloadButton album={album} artist={artist} />
+                                                </Box>
                                             </TableCell>
                                         </TableRow>
                                         {isExpanded && album.mb_releasegroupid && (

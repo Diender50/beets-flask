@@ -9,12 +9,9 @@ import {
     TableRow,
     TableSortLabel,
     Box,
-    Button,
-    CircularProgress,
-    Paper,
+    IconButton,
     Tooltip,
     Typography,
-    useTheme,
 } from '@mui/material';
 import { CheckIcon, UserRoundMinusIcon, UserRoundPlusIcon } from 'lucide-react';
 import { Link } from '@tanstack/react-router';
@@ -35,6 +32,14 @@ export interface ArtistsTableProps {
 type SortField = 'artist' | 'album_count' | 'item_count' | 'missing_count' | 'total_size';
 type SortOrder = 'asc' | 'desc';
 
+const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '—';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
 export function ArtistsTable({
     artists,
     selected,
@@ -46,7 +51,6 @@ export function ArtistsTable({
     isUnfollowingArtist,
     disableActions = false,
 }: ArtistsTableProps) {
-    const theme = useTheme();
     const [sortField, setSortField] = useState<SortField>('artist');
     const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
@@ -55,66 +59,41 @@ export function ArtistsTable({
         copy.sort((a, b) => {
             let aVal: string | number;
             let bVal: string | number;
-
-            if (sortField === 'artist') {
-                aVal = a.artist || 'Unknown';
-                bVal = b.artist || 'Unknown';
-            } else if (sortField === 'album_count') {
-                aVal = a.album_count;
-                bVal = b.album_count;
-            } else if (sortField === 'item_count') {
-                aVal = a.item_count;
-                bVal = b.item_count;
-            } else if (sortField === 'missing_count') {
-                aVal = a.missing_count ?? 0;
-                bVal = b.missing_count ?? 0;
-            } else if (sortField === 'total_size') {
-                aVal = a.total_size;
-                bVal = b.total_size;
-            } else {
-                return 0;
-            }
-
-            if (typeof aVal === 'string' && typeof bVal === 'string') {
-                return sortOrder === 'asc'
-                    ? aVal.localeCompare(bVal)
-                    : bVal.localeCompare(aVal);
-            } else if (typeof aVal === 'number' && typeof bVal === 'number') {
-                return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
-            }
-            return 0;
+            if (sortField === 'artist') { aVal = a.artist || ''; bVal = b.artist || ''; }
+            else if (sortField === 'album_count') { aVal = a.album_count; bVal = b.album_count; }
+            else if (sortField === 'item_count') { aVal = a.item_count; bVal = b.item_count; }
+            else if (sortField === 'missing_count') { aVal = a.missing_count ?? 0; bVal = b.missing_count ?? 0; }
+            else { aVal = a.total_size; bVal = b.total_size; }
+            if (typeof aVal === 'string') return sortOrder === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal);
+            return sortOrder === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
         });
         return copy;
     }, [artists, sortField, sortOrder]);
 
     const handleSort = (field: SortField) => {
-        if (sortField === field) {
-            setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-        } else {
-            setSortField(field);
-            setSortOrder('asc');
-        }
-    };
-
-    const formatBytes = (bytes: number): string => {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        if (sortField === field) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+        else { setSortField(field); setSortOrder('asc'); }
     };
 
     const allNames = sorted.map((a: Artist) => a.artist);
-    const selectedVisibleCount = allNames.filter((name: string) => selected.has(name)).length;
+    const selectedVisibleCount = allNames.filter((n: string) => selected.has(n)).length;
     const allChecked = allNames.length > 0 && selectedVisibleCount === allNames.length;
     const someChecked = selectedVisibleCount > 0 && selectedVisibleCount < allNames.length;
 
+    const colHeader = {
+        fontSize: 11,
+        fontWeight: 600,
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.05em',
+        color: 'text.disabled',
+    };
+
     return (
-        <TableContainer component={Paper}>
-            <Table size="small">
+        <TableContainer sx={{ background: 'transparent' }}>
+            <Table size="small" sx={{ minWidth: 0, width: '100%', borderCollapse: 'collapse' }}>
                 <TableHead>
-                    <TableRow sx={{ backgroundColor: 'primary.light' }}>
-                        <TableCell padding="checkbox" sx={{ width: 44 }}>
+                    <TableRow>
+                        <TableCell padding="checkbox" sx={{ width: 40, border: 'none', pb: 0.5 }}>
                             <Checkbox
                                 size="small"
                                 indeterminate={someChecked}
@@ -123,181 +102,143 @@ export function ArtistsTable({
                                 onChange={(e: { target: { checked: boolean } }) =>
                                     onToggleSelectAll(e.target.checked, allNames)
                                 }
-                                inputProps={{ 'aria-label': 'Select all artists' }}
                             />
                         </TableCell>
-                        <TableCell>
+                        <TableCell sx={{ border: 'none', pb: 0.5 }}>
                             <TableSortLabel
                                 active={sortField === 'artist'}
                                 direction={sortField === 'artist' ? sortOrder : 'asc'}
                                 onClick={() => handleSort('artist')}
+                                sx={colHeader}
                             >
                                 Artist
                             </TableSortLabel>
                         </TableCell>
-                        <TableCell align="right">
-                            <TableSortLabel
-                                active={sortField === 'album_count'}
-                                direction={sortField === 'album_count' ? sortOrder : 'asc'}
-                                onClick={() => handleSort('album_count')}
-                            >
+                        <TableCell align="right" sx={{ border: 'none', pb: 0.5, '@media (max-width: 639px)': { display: 'none' } }}>
+                            <TableSortLabel active={sortField === 'album_count'} direction={sortField === 'album_count' ? sortOrder : 'asc'} onClick={() => handleSort('album_count')} sx={colHeader}>
                                 Albums
                             </TableSortLabel>
                         </TableCell>
-                        <TableCell align="right">
-                            <TableSortLabel
-                                active={sortField === 'item_count'}
-                                direction={sortField === 'item_count' ? sortOrder : 'asc'}
-                                onClick={() => handleSort('item_count')}
-                            >
+                        <TableCell align="right" sx={{ border: 'none', pb: 0.5, '@media (max-width: 639px)': { display: 'none' } }}>
+                            <TableSortLabel active={sortField === 'item_count'} direction={sortField === 'item_count' ? sortOrder : 'asc'} onClick={() => handleSort('item_count')} sx={colHeader}>
                                 Tracks
                             </TableSortLabel>
                         </TableCell>
-                        <TableCell align="right">
-                            <TableSortLabel
-                                active={sortField === 'missing_count'}
-                                direction={sortField === 'missing_count' ? sortOrder : 'asc'}
-                                onClick={() => handleSort('missing_count')}
-                            >
+                        <TableCell align="right" sx={{ border: 'none', pb: 0.5, width: 80 }}>
+                            <TableSortLabel active={sortField === 'missing_count'} direction={sortField === 'missing_count' ? sortOrder : 'asc'} onClick={() => handleSort('missing_count')} sx={colHeader}>
                                 Missing
                             </TableSortLabel>
                         </TableCell>
-                        <TableCell align="right">
-                            <TableSortLabel
-                                active={sortField === 'total_size'}
-                                direction={sortField === 'total_size' ? sortOrder : 'asc'}
-                                onClick={() => handleSort('total_size')}
-                            >
+                        <TableCell align="right" sx={{ border: 'none', pb: 0.5, '@media (max-width: 639px)': { display: 'none' } }}>
+                            <TableSortLabel active={sortField === 'total_size'} direction={sortField === 'total_size' ? sortOrder : 'asc'} onClick={() => handleSort('total_size')} sx={colHeader}>
                                 Size
                             </TableSortLabel>
                         </TableCell>
-                        <TableCell align="center" sx={{ width: 160 }}>
-                            <Tooltip title="Follow status">
-                                <Box
-                                    component="span"
-                                    sx={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                    }}
-                                >
-                                    <UserRoundPlusIcon size={14} />
-                                </Box>
-                            </Tooltip>
-                        </TableCell>
+                        <TableCell sx={{ border: 'none', pb: 0.5, width: 48 }} />
                     </TableRow>
                 </TableHead>
                 <TableBody>
                     {sorted.length === 0 ? (
                         <TableRow>
-                            <TableCell colSpan={7} align="center">
-                                <Typography color="textSecondary">
-                                    No artists found
-                                </Typography>
+                            <TableCell colSpan={7} align="center" sx={{ border: 'none', py: 6 }}>
+                                <Typography variant="body2" color="text.disabled">No artists found</Typography>
                             </TableCell>
                         </TableRow>
-                    ) : (
-                        sorted.map((artist) => (
-                            <TableRow
-                                key={artist.artist}
-                                component={Link}
-                                to="/library/browse/artists/$artist"
-                                params={{ artist: artist.artist }}
-                                sx={{
-                                    cursor: 'pointer',
-                                    textDecoration: 'none',
-                                    '&:hover': {
-                                        backgroundColor: 'action.hover',
-                                    },
+                    ) : sorted.map((artist: Artist) => (
+                        <TableRow
+                            key={artist.artist}
+                            component={Link}
+                            to="/library/browse/artists/$artist"
+                            params={{ artist: artist.artist }}
+                            sx={{
+                                cursor: 'pointer',
+                                textDecoration: 'none',
+                                borderBottom: '1px solid',
+                                borderColor: 'divider',
+                                transition: 'background-color 0.1s',
+                                '&:hover': { backgroundColor: 'action.hover' },
+                                '&:last-child': { borderBottom: 'none' },
+                            }}
+                        >
+                            <TableCell
+                                padding="checkbox"
+                                sx={{ border: 'none', py: 0.75 }}
+                                onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
+                            >
+                                <Checkbox
+                                    size="small"
+                                    checked={selected.has(artist.artist)}
+                                    disabled={disableActions}
+                                    onChange={(_e: unknown, checked: boolean) =>
+                                        onToggleSelection(artist.artist, checked)
+                                    }
+                                />
+                            </TableCell>
+                            <TableCell sx={{ border: 'none', py: 0.75 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+                                    <Typography
+                                        variant="body2"
+                                        sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                    >
+                                        {artist.artist || 'Unknown Artist'}
+                                    </Typography>
+                                    {artist.followed && (
+                                        <Tooltip title="Following">
+                                            <Box component="span" sx={{ color: 'success.main', display: 'flex', flexShrink: 0 }}>
+                                                <CheckIcon size={12} />
+                                            </Box>
+                                        </Tooltip>
+                                    )}
+                                </Box>
+                            </TableCell>
+                            <TableCell align="right" sx={{ border: 'none', py: 0.75, '@media (max-width: 639px)': { display: 'none' } }}>
+                                <Typography variant="caption" color="text.secondary">{artist.album_count || '—'}</Typography>
+                            </TableCell>
+                            <TableCell align="right" sx={{ border: 'none', py: 0.75, '@media (max-width: 639px)': { display: 'none' } }}>
+                                <Typography variant="caption" color="text.secondary">{artist.item_count || '—'}</Typography>
+                            </TableCell>
+                            <TableCell align="right" sx={{ border: 'none', py: 0.75 }}>
+                                <Typography variant="caption" color={artist.missing_count ? 'text.secondary' : 'text.disabled'}>
+                                    {artist.missing_count ?? '—'}
+                                </Typography>
+                            </TableCell>
+                            <TableCell align="right" sx={{ border: 'none', py: 0.75, '@media (max-width: 639px)': { display: 'none' } }}>
+                                <Typography variant="caption" color="text.disabled">{formatBytes(artist.total_size)}</Typography>
+                            </TableCell>
+                            <TableCell
+                                align="center"
+                                sx={{ border: 'none', py: 0.75, width: 48, overflow: 'hidden', p: 0.5 }}
+                                onClick={(e: { preventDefault: () => void; stopPropagation: () => void }) => {
+                                    e.preventDefault(); e.stopPropagation();
                                 }}
                             >
-                                <TableCell
-                                    padding="checkbox"
-                                    onClick={(e: { stopPropagation: () => void }) => {
-                                        e.stopPropagation();
-                                    }}
-                                >
-                                    <Checkbox
-                                        size="small"
-                                        checked={selected.has(artist.artist)}
-                                        disabled={disableActions}
-                                        onChange={(_e: unknown, checked: boolean) =>
-                                            onToggleSelection(artist.artist, checked)
-                                        }
-                                        inputProps={{
-                                            'aria-label': `Select ${artist.artist}`,
-                                        }}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                                        {artist.artist || 'Unknown Artist'}
-                                        {artist.followed && (
-                                            <Tooltip title="Following">
-                                                <Box
-                                                    component="span"
-                                                    sx={{
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        color: theme.palette.success.main,
-                                                        flexShrink: 0,
-                                                    }}
-                                                >
-                                                    <CheckIcon size={13} />
-                                                </Box>
-                                            </Tooltip>
-                                        )}
-                                    </Box>
-                                </TableCell>
-                                <TableCell align="right">{artist.album_count}</TableCell>
-                                <TableCell align="right">{artist.item_count}</TableCell>
-                                <TableCell align="right">{artist.missing_count ?? 0}</TableCell>
-                                <TableCell align="right">{formatBytes(artist.total_size)}</TableCell>
-                                <TableCell
-                                    align="center"
-                                    onClick={(e: { preventDefault: () => void; stopPropagation: () => void }) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                    }}
-                                >
-                                    {artist.followed ? (
-                                        <Button
+                                {artist.followed ? (
+                                    <Tooltip title="Unfollow">
+                                        <IconButton
                                             size="small"
-                                            variant="outlined"
                                             color="error"
                                             onClick={() => onUnfollowArtist(artist.artist)}
                                             disabled={disableActions || isUnfollowingArtist(artist.artist)}
-                                            startIcon={
-                                                isUnfollowingArtist(artist.artist) ? (
-                                                    <CircularProgress size={14} />
-                                                ) : (
-                                                    <UserRoundMinusIcon size={14} />
-                                                )
-                                            }
+                                            sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
                                         >
-                                            Unfollow
-                                        </Button>
-                                    ) : (
-                                        <Button
+                                            <UserRoundMinusIcon size={14} />
+                                        </IconButton>
+                                    </Tooltip>
+                                ) : (
+                                    <Tooltip title="Follow">
+                                        <IconButton
                                             size="small"
-                                            variant="outlined"
                                             onClick={() => onFollowArtist(artist.artist)}
                                             disabled={disableActions || isFollowingArtist(artist.artist)}
-                                            startIcon={
-                                                isFollowingArtist(artist.artist) ? (
-                                                    <CircularProgress size={14} />
-                                                ) : (
-                                                    <UserRoundPlusIcon size={14} />
-                                                )
-                                            }
+                                            sx={{ opacity: 0.4, '&:hover': { opacity: 1 } }}
                                         >
-                                            Follow
-                                        </Button>
-                                    )}
-                                </TableCell>
-                            </TableRow>
-                        ))
-                    )}
+                                            <UserRoundPlusIcon size={14} />
+                                        </IconButton>
+                                    </Tooltip>
+                                )}
+                            </TableCell>
+                        </TableRow>
+                    ))}
                 </TableBody>
             </Table>
         </TableContainer>

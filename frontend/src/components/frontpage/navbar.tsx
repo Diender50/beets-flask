@@ -1,10 +1,7 @@
 import {
     Compass,
-    Home,
     Inbox,
     Library,
-    Search,
-    Terminal,
     Users,
 } from 'lucide-react';
 import { MouseEvent, ReactElement, useRef } from 'react';
@@ -154,22 +151,13 @@ function NavItem({ label, ...props }: StyledTabProps) {
 }
 
 function NavTabs() {
-    const theme = useTheme();
     const location = useRouterState({ select: (s) => s.location });
     let basePath = location.pathname.split('/')[1];
     const navItems: NavItemConfig[] = [
-        { label: 'Home', icon: <Home />, to: '/' },
         { label: 'Inbox', icon: <Inbox />, to: '/inbox' },
-        //{ label: "Session", icon: <Inbox />, to: "/sessiondraft" },
         { label: 'Library', icon: <Library />, to: '/library/browse' },
         { label: 'Artists', icon: <Users />, to: '/library/browse/artists' },
         { label: 'Discover', icon: <Compass />, to: '/library/discovery' },
-        { label: 'Search', icon: <Search />, to: '/library/search' },
-        {
-            label: '',
-            icon: <Terminal stroke={theme.palette.primary.main} />,
-            to: '/terminal',
-        },
     ];
 
     // only needed temporarily until search gets an icon in the toolbar!
