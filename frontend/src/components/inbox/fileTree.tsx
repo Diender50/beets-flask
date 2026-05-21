@@ -357,7 +357,7 @@ export function FolderTreeRow({
                 size={ICON_SIZE}
             />
 
-            <Typography variant="body1" sx={{ paddingBlock: 0.25 }}>
+            <Typography variant="body1" noWrap sx={{ paddingBlock: 0.25, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {folder.full_path.split('/').pop()}
             </Typography>
         </LevelIndentWrapper>
@@ -465,7 +465,8 @@ function LevelIndentWrapper({
                     alignItems: 'center',
                     paddingBlock: '1px',
                     position: 'relative',
-                    flexShrink: 0,
+                    flexShrink: 1,
+                    minWidth: 0,
                     gap: '0.4rem',
                     paddingLeft: level * ICON_SIZE + 'px',
 

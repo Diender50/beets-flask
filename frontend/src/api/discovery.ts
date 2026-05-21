@@ -1,10 +1,25 @@
 import { queryOptions } from '@tanstack/react-query';
 
+/* ─────────────────────── Quality Priority ──────────────────────── */
+
+export const qualityPriorityQueryOptions = () =>
+    queryOptions({
+        queryKey: ['qualityPriority'],
+        queryFn: async (): Promise<string[]> => {
+            const response = await fetch('/discovery/quality-priority');
+            if (!response.ok) return [];
+            const data = await response.json();
+            return Array.isArray(data.quality_priority) ? data.quality_priority : [];
+        },
+        staleTime: Infinity,
+    });
+
 /* ─────────────────────── Followed Artists ──────────────────────── */
 
 export interface FollowedArtist {
     name: string;
     added_at: string;
+    missing_count?: number;
 }
 
 export const followedArtistsQueryOptions = () =>
@@ -62,6 +77,7 @@ export async function searchArtists(q: string): Promise<ArtistSearchResult[]> {
 /* ──────────────────── Download (Phase 3) ───────────────────────── */
 
 export type DownloadStatus = 'pending' | 'downloading' | 'done' | 'error';
+export type DownloadQuality = 'flac' | '320' | '128';
 
 export interface DownloadJob {
     job_id: string;
@@ -102,6 +118,7 @@ export async function getDownloadSuggestions(opts: {
     album: string;
     artist: string;
     provider?: 'deemix' | 'slskd' | 'squidwtf';
+    expected_track_count?: number | null;
     signal?: AbortSignal;
 }): Promise<DownloadSuggestionsResponse> {
     const controller = new AbortController();
@@ -121,6 +138,7 @@ export async function getDownloadSuggestions(opts: {
                 album: opts.album,
                 artist: opts.artist,
                 provider: opts.provider,
+                ...(opts.expected_track_count != null ? { expected_track_count: opts.expected_track_count } : {}),
             }),
             signal: controller.signal,
         });
@@ -145,8 +163,10 @@ export async function startDownload(opts: {
     album: string;
     artist: string;
     provider?: 'deemix' | 'slskd' | 'squidwtf';
+    quality?: DownloadQuality;
     deezer_id?: string;
     squid_album_id?: string;
+    squid_quality?: string;
     candidate?: Record<string, unknown>;
     release_id?: string;
 }): Promise<DownloadJob> {
@@ -160,6 +180,39 @@ export async function startDownload(opts: {
         throw new Error(`Download failed (${response.status}): ${text}`);
     }
     return response.json();
+}
+
+export async function startBatchDownload(opts: {
+    providers: Array<'deemix' | 'slskd' | 'squidwtf'>;
+    qualities: DownloadQuality[];
+    albums: Array<{
+        album: string;
+        artist: string;
+        release_id?: string;
+        deezer_id?: string;
+        squid_album_id?: string;
+    }>;
+}): Promise<{
+    providers: string[];
+    qualities: DownloadQuality[];
+    requested: number;
+    queued: number;
+    failed: number;
+    jobs: DownloadJob[];
+    errors: Array<{ index: number; artist: string; album: string; error: string; status: number }>;
+}> {
+    const response = await fetch('/discovery/download/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+        const message = typeof payload?.error === 'string' ? payload.error : 'Batch download failed';
+        throw new Error(message);
+    }
+    return payload;
 }
 
 export async function getDownloadJob(jobId: string): Promise<DownloadJob> {

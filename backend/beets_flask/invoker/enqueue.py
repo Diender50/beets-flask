@@ -36,7 +36,7 @@ from beets_flask.importer.session import (
     delete_from_beets,
 )
 from beets_flask.importer.types import DuplicateAction
-from beets_flask.library_cache import invalidate_artists_cache
+from beets_flask.library_cache import invalidate_artists_cache, invalidate_missing_cache_for_string
 from beets_flask.logger import log
 from beets_flask.redis import import_queue, preview_queue
 from beets_flask.server.exceptions import (
@@ -53,6 +53,34 @@ from .job import ExtraJobMeta, _set_job_meta
 
 if TYPE_CHECKING:
     from rq.job import Job
+
+
+def _invalidate_missing_cache_for_session(session: ImportSession):
+    """Invalidate missing-albums cache only for artists imported in this session."""
+    for artist in session._imported_artists:
+        invalidate_missing_cache_for_string(artist)
+
+
+def _recompute_missing_cache_for_session(session: ImportSession):
+    """Recompute missing-albums cache only for artists imported in this session."""
+    if not session._imported_artists:
+        return
+
+    # Local import avoids import cycles during module init.
+    from beets_flask.server.routes.library.artists import recompute_missing_cache_for_artist
+
+    for artist in session._imported_artists:
+        try:
+            recompute_missing_cache_for_artist(artist, lib=session.lib)
+        except Exception as exc:
+            # Keep robust behavior: if recompute fails, remove stale cache entry so next
+            # request recomputes it lazily.
+            log.warning(
+                "Failed to recompute missing cache for artist=%s after import: %s",
+                artist,
+                exc,
+            )
+            invalidate_missing_cache_for_string(artist)
     from rq.queue import Queue
 
 
@@ -541,6 +569,7 @@ async def run_import_candidate(
             db_session.commit()
 
             invalidate_artists_cache()
+            _recompute_missing_cache_for_session(i_session)
     log.info(f"Import candidate done. {hash=} {path=}")
 
 
@@ -571,6 +600,7 @@ async def run_import_auto(
             db_session.commit()
 
             invalidate_artists_cache()
+            _recompute_missing_cache_for_session(i_session)
     log.info(f"Auto Import done. {hash=} {path=}")
 
 
@@ -596,6 +626,7 @@ async def run_import_bootleg(hash: str, path: str):
             db_session.commit()
 
             invalidate_artists_cache()
+            _recompute_missing_cache_for_session(i_session)
     log.info(f"Bootleg Import done. {hash=} {path=}")
 
 

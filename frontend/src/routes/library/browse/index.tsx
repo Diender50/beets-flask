@@ -3,279 +3,174 @@ import {
     ChevronRight,
     ClockIcon,
     Disc3Icon,
-    LibraryIcon,
     User2Icon,
 } from 'lucide-react';
 import { useMemo } from 'react';
 import {
     Box,
-    BoxProps,
     Button,
-    Card,
-    CardContent,
     Typography,
     useTheme,
 } from '@mui/material';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
 
+import { inboxStatsQueryOptions } from '@/api/inbox';
 import {
     Artist,
     artistsQueryOptions,
+    libraryStatsQueryOptions,
     recentAlbumsQueryOptions,
 } from '@/api/library';
 import { PageWrapper } from '@/components/common/page';
 import { relativeTime } from '@/components/common/units/time';
-import { CardHeader } from '@/components/frontpage/statsCard';
+import { InboxStatsCard, LibraryStatsCard } from '@/components/frontpage/statsCard';
 import { CoverArt } from '@/components/library/coverArt';
 import { AlbumResponseMinimal } from '@/pythonTypes';
 
 export const Route = createFileRoute('/library/browse/')({
     component: RouteComponent,
     loader: async (opts) => {
-        const p1 = opts.context.queryClient.ensureQueryData(
-            artistsQueryOptions()
-        );
-        const p2 = opts.context.queryClient.ensureQueryData(
-            recentAlbumsQueryOptions
-        );
-        await Promise.all([p1, p2]);
+        await Promise.all([
+            opts.context.queryClient.ensureQueryData(artistsQueryOptions()),
+            opts.context.queryClient.ensureQueryData(recentAlbumsQueryOptions),
+            opts.context.queryClient.ensureQueryData(libraryStatsQueryOptions()),
+            opts.context.queryClient.ensureQueryData(inboxStatsQueryOptions()),
+        ]);
     },
 });
 
 function RouteComponent() {
+    const { data: libraryStats } = useSuspenseQuery(libraryStatsQueryOptions());
+    const { data: inboxStats } = useSuspenseQuery(inboxStatsQueryOptions());
+
     return (
         <PageWrapper
             sx={(theme) => ({
                 display: 'flex',
                 flexDirection: 'column',
-                height: '100%',
-                width: '100%',
-                alignItems: 'center',
-                paddingTop: theme.spacing(1),
-                paddingInline: theme.spacing(0.5),
-                [theme.breakpoints.up('laptop')]: {
-                    height: 'auto',
-                    paddingTop: theme.spacing(2),
-                    paddingInline: theme.spacing(1),
-                },
-                gap: 6,
+                gap: 3,
+                py: 2,
+                px: 2,
                 overflow: 'auto',
+                [theme.breakpoints.up('laptop')]: {
+                    px: 3,
+                    py: 3,
+                },
             })}
         >
-            <PageHeader />
-            <Albums />
-            <Artists />
+            {/* Compact stats strip */}
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                <LibraryStatsCard libraryStats={libraryStats} />
+                {inboxStats.map((inbox, i) => (
+                    <InboxStatsCard inboxStats={inbox} key={i} />
+                ))}
+            </Box>
+
+            {/* Main content: Albums + Artists */}
+            <Box
+                sx={(theme) => ({
+                    display: 'grid',
+                    gap: 3,
+                    gridTemplateColumns: '1fr',
+                    [theme.breakpoints.up('laptop')]: {
+                        gridTemplateColumns: '1fr 1fr',
+                        alignItems: 'start',
+                    },
+                })}
+            >
+                <RecentAlbums />
+                <ArtistsSection />
+            </Box>
         </PageWrapper>
     );
 }
 
-function PageHeader(props: BoxProps) {
+/* ─────────────────────────── Recent Albums ─────────────────────────── */
+
+function RecentAlbums() {
+    const { data: albums } = useSuspenseQuery(recentAlbumsQueryOptions);
+
     return (
-        <Box
-            sx={{
-                display: 'grid',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '100%',
-                gridTemplateColumns: '1fr',
-                gridTemplateRows: '1fr',
-                paddingInline: 2,
-            }}
-            {...props}
-        >
+        <Box>
+            <SectionHeader
+                icon={<Disc3Icon size={16} />}
+                title="Recent Albums"
+                action={
+                    <Button
+                        size="small"
+                        endIcon={<ChevronRight size={14} />}
+                        component={Link}
+                        to="/library/browse/albums"
+                        sx={{ textTransform: 'none', fontSize: 12 }}
+                    >
+                        All albums
+                    </Button>
+                }
+            />
             <Box
-                sx={{
-                    alignSelf: 'center',
-                    display: 'flex',
+                sx={(theme) => ({
+                    display: 'grid',
                     gap: 1,
-                    zIndex: 1,
-                    borderRadius: 1,
-                    color: 'primary.muted',
-                    gridColumn: '1',
-                    gridRow: '1',
-                    justifySelf: 'flex-start',
-                }}
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                    [theme.breakpoints.down('tablet')]: {
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                    },
+                })}
             >
-                <LibraryIcon size={40} />
+                {albums.slice(0, 8).map((album) => (
+                    <AlbumCard key={album.id} album={album} />
+                ))}
             </Box>
-            <Typography
-                variant="h4"
-                component="div"
-                fontWeight="bold"
-                sx={{
-                    gridColumn: '1',
-                    gridRow: '1',
-                    textAlign: 'center',
-                }}
-            >
-                Browse your Library
-            </Typography>
         </Box>
     );
 }
 
-/* --------------------------------- Albums --------------------------------- */
-
-function Albums() {
-    const { data: albums } = useSuspenseQuery(recentAlbumsQueryOptions);
-
+function AlbumCard({ album }: { album: AlbumResponseMinimal }) {
     return (
-        <Card sx={{ padding: 2, width: '100%', overflow: 'unset' }}>
-            <CardHeader icon={<Disc3Icon size={36} />} size="large">
-                <Typography variant="body1" color="text.secondary">
-                    Albums
-                </Typography>
-            </CardHeader>
-            <CardContent
-                sx={{
-                    paddingInline: 1,
-                    paddingTop: 2,
-                    m: 0,
-                    paddingBottom: '0 !important',
-                }}
-            >
-                <Box>
-                    <Typography
-                        variant="h5"
-                        fontWeight={800}
-                        letterSpacing={0.5}
-                    >
-                        Recently added
-                    </Typography>
-                    <Box
-                        sx={{
-                            display: 'grid',
-                            gridTemplateColumns:
-                                'repeat(auto-fill, minmax(300px, 1fr))',
-                            gridAutoRows: 'auto',
-                            gap: 1,
-                            paddingTop: 2.5,
-                        }}
-                    >
-                        {albums.slice(0, 6).map((album) => (
-                            <AlbumRecentCard key={album.id} {...album} />
-                        ))}
-                    </Box>
-                </Box>
-
-                <Box
-                    sx={(theme) => ({
-                        paddingTop: 3,
-                        display: 'flex',
-                        gap: 2,
-                        fontWeight: 600,
-                        justifyContent: 'flex-end',
-                        [theme.breakpoints.down('tablet')]: {
-                            '>*': {
-                                width: '100%',
-                            },
-                        },
-                    })}
-                >
-                    <Button
-                        variant="contained"
-                        endIcon={<ChevronRight />}
-                        component={Link}
-                        to="/library/browse/albums"
-                        size="large"
-                        sx={{
-                            fontWeight: 600,
-                        }}
-                    >
-                        All Albums
-                    </Button>
-                </Box>
-            </CardContent>
-        </Card>
-    );
-}
-
-function AlbumRecentCard(album: AlbumResponseMinimal) {
-    const theme = useTheme();
-    return (
-        <Link to="/library/album/$albumId" params={{ albumId: album.id }}>
+        <Link
+            to="/library/album/$albumId"
+            params={{ albumId: album.id }}
+            style={{ textDecoration: 'none', color: 'inherit' }}
+        >
             <Box
                 sx={{
-                    padding: 0.5,
-                    border: '2px solid',
-                    borderColor: 'primary.muted',
-                    width: '100%',
-                    color: 'primary.muted',
                     display: 'flex',
                     flexDirection: 'column',
+                    gap: 0.5,
                     borderRadius: 1,
-                    alignItems: 'space-between',
-                    justifyContent: 'space-between',
-                    gap: 1,
+                    overflow: 'hidden',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    transition: 'border-color 0.15s',
+                    '&:hover': { borderColor: 'primary.main' },
                 }}
             >
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <CoverArt
-                        size="small"
-                        type="album"
-                        beetsId={album.id}
-                        sx={{
-                            height: '70px',
-                            width: '70px',
-                            flexShrink: 0,
-                        }}
-                    />
+                <CoverArt
+                    type="album"
+                    beetsId={album.id}
+                    sx={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }}
+                />
+                <Box sx={{ px: 1, pb: 1 }}>
                     <Typography
-                        variant="h6"
-                        sx={{
-                            fontWeight: 600,
-                            overflowWrap: 'anywhere',
-                            width: '100%',
-                            lineHeight: 1.2,
-                        }}
+                        variant="body2"
+                        fontWeight={600}
+                        sx={{ lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                     >
-                        {album.name || '[Unknown Album]'}
+                        {album.name || '[Unknown]'}
                     </Typography>
-                </Box>
-                <Box
-                    sx={{
-                        width: '100%',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'space-between',
-                        justifyContent: 'space-between',
-                    }}
-                >
-                    <Box
-                        sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: 1,
-                            color: 'grey.600',
-                            letterSpacing: '1px',
-                            width: '100%',
-                        }}
-                    >
-                        <Box
-                            sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 0.5,
-                            }}
-                        >
-                            <ClockIcon size={theme.iconSize.md} />
-                            <Typography variant="body2">
-                                Added{' '}
-                                {album.added
-                                    ? relativeTime(album.added)
-                                    : 'Unknown'}
-                            </Typography>
-                        </Box>
-                    </Box>
+                    {album.added && (
+                        <Typography variant="caption" color="text.disabled">
+                            {relativeTime(album.added)}
+                        </Typography>
+                    )}
                 </Box>
             </Box>
         </Link>
     );
 }
 
-/* --------------------------------- Artists -------------------------------- */
+/* ─────────────────────────── Artists Section ────────────────────────── */
 
 function earliestAddedDate(artist: Artist) {
     return [artist.first_album_added, artist.first_item_added]
@@ -283,266 +178,136 @@ function earliestAddedDate(artist: Artist) {
         .reduce((min, d) => (d < min ? d : min));
 }
 
-function Artists() {
+function ArtistsSection() {
     const { data: artists } = useSuspenseQuery(artistsQueryOptions());
 
-    const newAdditions = useMemo(() => {
-        return artists.toSorted((a, b) => {
-            const earliestDateA = earliestAddedDate(a);
-            const earliestDateB = earliestAddedDate(b);
-            return earliestDateB.getTime() - earliestDateA.getTime();
-        });
-    }, [artists]);
-
-    const topArtistsByItems = useMemo(() => {
-        return artists
-            .filter((a) => a.item_count > 0)
-            .toSorted((a, b) => b.item_count - a.item_count);
-    }, [artists]);
-
-    return (
-        <Card sx={{ padding: 2, width: '100%', overflow: 'unset' }}>
-            <CardHeader icon={<User2Icon size={36} />} size="large">
-                <Typography variant="body1" color="text.secondary">
-                    Artists
-                </Typography>
-            </CardHeader>
-            <CardContent
-                sx={{
-                    paddingInline: 1,
-                    paddingTop: 2,
-                    m: 0,
-                    paddingBottom: '0 !important',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 3,
-                }}
-            >
-                <Box>
-                    <Typography
-                        variant="h5"
-                        fontWeight={800}
-                        letterSpacing={0.5}
-                    >
-                        Top occurring Artists
-                    </Typography>
-                    <Box
-                        sx={{
-                            display: 'grid',
-                            gridTemplateColumns:
-                                'repeat(auto-fill, minmax(200px, 1fr))',
-                            gridAutoRows: '1fr',
-                            gap: 1,
-                            paddingTop: 2.5,
-                        }}
-                    >
-                        {topArtistsByItems.slice(0, 10).map((artist) => {
-                            return (
-                                <ArtistCardCounts
-                                    key={artist.artist}
-                                    {...artist}
-                                />
-                            );
-                        })}
-                    </Box>
-                </Box>
-                <Box>
-                    <Typography
-                        variant="h5"
-                        fontWeight={800}
-                        letterSpacing={0.5}
-                    >
-                        New additions
-                    </Typography>
-                    <Box
-                        sx={{
-                            display: 'grid',
-                            gridTemplateColumns:
-                                'repeat(auto-fill, minmax(220px, 1fr))',
-                            gridAutoRows: '1fr',
-                            gap: 1,
-                            paddingTop: 2.5,
-                        }}
-                    >
-                        {newAdditions.slice(0, 10).map((artist) => {
-                            return (
-                                <ArtistCardAdded
-                                    key={artist.artist}
-                                    {...artist}
-                                />
-                            );
-                        })}
-                    </Box>
-                </Box>
-                <Box
-                    sx={(theme) => ({
-                        paddingTop: 3,
-                        display: 'flex',
-                        gap: 2,
-                        fontWeight: 600,
-                        justifyContent: 'flex-end',
-                        [theme.breakpoints.down('tablet')]: {
-                            '>*': {
-                                width: '100%',
-                            },
-                        },
-                    })}
-                >
-                    <Button
-                        variant="contained"
-                        endIcon={<ChevronRight />}
-                        component={Link}
-                        to="/library/browse/artists"
-                        size="large"
-                        sx={{
-                            fontWeight: 600,
-                        }}
-                    >
-                        All Artists
-                    </Button>
-                </Box>
-            </CardContent>
-        </Card>
+    const topArtists = useMemo(
+        () => artists.filter((a) => a.item_count > 0).toSorted((a, b) => b.item_count - a.item_count).slice(0, 12),
+        [artists]
     );
-}
-
-function ArtistCardCounts({
-    artist: name,
-    album_count: nAlbums,
-    item_count: nTracks,
-}: Artist) {
-    const theme = useTheme();
+    const recentArtists = useMemo(
+        () => artists.toSorted((a, b) => earliestAddedDate(b).getTime() - earliestAddedDate(a).getTime()).slice(0, 8),
+        [artists]
+    );
 
     return (
-        <Box
-            sx={{
-                padding: 0.5,
-                border: '2px solid',
-                borderColor: 'primary.muted',
-                width: '100%',
-                color: 'primary.muted',
-                display: 'flex',
-                alignItems: 'center',
-                flexDirection: 'column',
-                borderRadius: 1,
-                a: {
-                    width: '100%',
-                },
-            }}
-        >
-            <Link
-                to="/library/browse/artists/$artist"
-                params={{ artist: name }}
-            >
-                <Box
-                    sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 1,
-                        color: 'grey.600',
-                        letterSpacing: '1px',
-                        width: '100%',
-                    }}
-                >
-                    <Box
-                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}
-                    >
-                        <Disc3Icon size={theme.iconSize.md} />
-                        <Typography variant="body2">
-                            {nAlbums} Album{nAlbums !== 1 ? 's' : ''}
-                        </Typography>
-                    </Box>
-                    <Box
-                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}
-                    >
-                        <AudioLinesIcon size={theme.iconSize.md} />
-                        <Typography variant="body2">
-                            {nTracks} Track{nTracks !== 1 ? 's' : ''}
-                        </Typography>
-                    </Box>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <Box>
+                <SectionHeader
+                    icon={<User2Icon size={16} />}
+                    title="Top Artists"
+                    action={
+                        <Button
+                            size="small"
+                            endIcon={<ChevronRight size={14} />}
+                            component={Link}
+                            to="/library/browse/artists"
+                            sx={{ textTransform: 'none', fontSize: 12 }}
+                        >
+                            All artists
+                        </Button>
+                    }
+                />
+                <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                    {topArtists.map((artist) => (
+                        <ArtistRow key={artist.artist} artist={artist} showTracks />
+                    ))}
                 </Box>
-                <Typography
-                    variant="h6"
-                    sx={{
-                        fontWeight: 600,
-                        lineHeight: 1.1,
-                        overflowWrap: 'anywhere',
-                        paddingLeft: 1,
-                        paddingBlock: 0.5,
-                        textAlign: 'right',
-                        width: '100%',
-                    }}
-                >
-                    {name}
-                </Typography>
-            </Link>
+            </Box>
+
+            <Box>
+                <SectionHeader
+                    icon={<ClockIcon size={16} />}
+                    title="Recently Added"
+                />
+                <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                    {recentArtists.map((artist) => (
+                        <ArtistRow key={artist.artist} artist={artist} showDate />
+                    ))}
+                </Box>
+            </Box>
         </Box>
     );
 }
 
-function ArtistCardAdded(artist: Artist) {
+function ArtistRow({
+    artist,
+    showTracks,
+    showDate,
+}: {
+    artist: Artist;
+    showTracks?: boolean;
+    showDate?: boolean;
+}) {
     const theme = useTheme();
+    return (
+        <Link
+            to="/library/browse/artists/$artist"
+            params={{ artist: artist.artist }}
+            style={{ textDecoration: 'none', color: 'inherit' }}
+        >
+            <Box
+                sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    px: 1,
+                    py: 0.75,
+                    borderRadius: 0.5,
+                    '&:hover': { backgroundColor: 'action.hover' },
+                    gap: 1,
+                }}
+            >
+                <Typography
+                    variant="body2"
+                    sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 0' }}
+                >
+                    {artist.artist}
+                </Typography>
+                {showTracks && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'text.disabled', flexShrink: 0 }}>
+                        <AudioLinesIcon size={12} />
+                        <Typography variant="caption">{artist.item_count}</Typography>
+                    </Box>
+                )}
+                {showDate && (
+                    <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0 }}>
+                        {relativeTime(earliestAddedDate(artist))}
+                    </Typography>
+                )}
+            </Box>
+        </Link>
+    );
+}
 
-    const added = earliestAddedDate(artist);
-    const name = artist.artist;
+/* ─────────────────────────── Shared components ─────────────────────── */
 
+function SectionHeader({
+    icon,
+    title,
+    action,
+}: {
+    icon: React.ReactNode;
+    title: string;
+    action?: React.ReactNode;
+}) {
     return (
         <Box
             sx={{
-                padding: 0.5,
-                border: '2px solid',
-                borderColor: 'primary.muted',
-                width: '100%',
-                color: 'primary.muted',
                 display: 'flex',
                 alignItems: 'center',
-                flexDirection: 'column',
-                borderRadius: 1,
-                a: {
-                    width: '100%',
-                },
+                gap: 1,
+                mb: 1.5,
+                pb: 0.75,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
             }}
         >
-            <Link
-                to="/library/browse/artists/$artist"
-                params={{ artist: name }}
-            >
-                <Box
-                    sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 1,
-                        color: 'grey.600',
-                        letterSpacing: '1px',
-                        width: '100%',
-                    }}
-                >
-                    <Box
-                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}
-                    >
-                        <ClockIcon size={theme.iconSize.md} />
-                        <Typography variant="body2">
-                            Added {added ? relativeTime(added) : 'Unknown'}
-                        </Typography>
-                    </Box>
-                </Box>
-                <Typography
-                    variant="h6"
-                    sx={{
-                        fontWeight: 600,
-                        lineHeight: 1.1,
-                        overflowWrap: 'anywhere',
-                        paddingLeft: 1,
-                        paddingBlock: 0.5,
-                        textAlign: 'right',
-                        width: '100%',
-                    }}
-                >
-                    {name}
-                </Typography>
-            </Link>
+            <Box sx={{ color: 'text.disabled', display: 'flex' }}>{icon}</Box>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
+                {title}
+            </Typography>
+            {action}
         </Box>
     );
 }

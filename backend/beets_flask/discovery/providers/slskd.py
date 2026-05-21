@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
+import re
 from typing import Any
 from urllib.parse import quote
 
 import aiohttp
 
 from beets_flask.logger import log
+
+
+def _norm_text(value: str) -> str:
+    return (value or "").casefold().strip()
 
 
 def _safe_int(v: Any) -> int:
@@ -52,6 +58,29 @@ def _file_extension(filename: str, extension: str | None = None) -> str:
     return basename.rsplit(".", 1)[-1].casefold().strip()
 
 
+def _parse_duration_seconds(value: Any) -> int:
+    """Parse duration to seconds. Handles int seconds, float, and 'MM:SS' / 'HH:MM:SS' strings."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    s = str(value).strip()
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            parts_int = [int(p) for p in parts]
+            if len(parts_int) == 2:
+                return parts_int[0] * 60 + parts_int[1]
+            if len(parts_int) == 3:
+                return parts_int[0] * 3600 + parts_int[1] * 60 + parts_int[2]
+        except ValueError:
+            pass
+    try:
+        return max(0, int(float(s)))
+    except ValueError:
+        return 0
+
+
 def _estimate_kbps(file_entry: dict[str, Any]) -> float | None:
     bitrate = file_entry.get("bitRate") or file_entry.get("bitrate") or file_entry.get("kbps")
     if bitrate is not None:
@@ -63,11 +92,11 @@ def _estimate_kbps(file_entry: dict[str, Any]) -> float | None:
             pass
 
     size_bytes = _safe_int(file_entry.get("size"))
-    length_seconds = _safe_int(file_entry.get("length"))
+    length_seconds = _parse_duration_seconds(file_entry.get("length"))
     if size_bytes <= 0 or length_seconds <= 0:
         return None
 
-    return (size_bytes * 8.0) / max(length_seconds, 1) / 1000.0
+    return (size_bytes * 8.0) / length_seconds / 1000.0
 
 
 def _audio_quality_score(extension: str, sample_rate: int, bit_depth: int) -> float:
@@ -183,39 +212,74 @@ def _flatten_responses(user_responses: list[dict[str, Any]]) -> list[dict[str, A
     return flattened
 
 
+def _folder_match_score(candidate: dict[str, Any], album_hint: str) -> float:
+    """Score how well the folder name and audio filenames match the searched album."""
+    if not album_hint:
+        return 0.5  # neutral when no hint
+
+    album_norm = _norm_text(album_hint)
+    folder = str(candidate.get("folder") or "")
+    folder_basename = folder.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    folder_score = difflib.SequenceMatcher(None, _norm_text(folder_basename), album_norm).ratio()
+
+    # Also check filenames: strip leading "NN - " / "NN." track number prefix then compare
+    files: list[dict[str, Any]] = candidate.get("files") or []
+    audio_exts = {".flac", ".mp3", ".m4a", ".ogg", ".aac", ".wav", ".aiff", ".opus", ".wma"}
+    file_scores: list[float] = []
+    for f in files:
+        fname = str(f.get("filename") or "")
+        ext = ("." + str(f.get("extension") or "")).lower().rstrip(".")
+        if ext not in audio_exts:
+            continue
+        base = fname.replace("\\", "/").rsplit("/", 1)[-1]
+        # Strip extension
+        base = base.rsplit(".", 1)[0] if "." in base else base
+        # Strip leading track number prefix e.g. "01 - ", "01. ", "1 "
+        base = re.sub(r"^\d{1,3}[\s.\-]+", "", base).strip()
+        if base:
+            file_scores.append(difflib.SequenceMatcher(None, _norm_text(base), album_norm).ratio())
+
+    file_avg = sum(file_scores) / len(file_scores) if file_scores else 0.0
+    return folder_score * 0.6 + file_avg * 0.4
+
+
 def score_candidate(
     candidate: dict[str, Any],
     *,
-    ranking_mode: str,
-    min_bitrate_kbps: int,  # kept for API compat
+    album_hint: str = "",
+    expected_track_count: int | None = None,
 ) -> float:
-    extension = str(candidate.get("extension") or "").casefold().lstrip(".")
-    sample_rate = _safe_int(candidate.get("sampleRate"))
-    bit_depth = _safe_int(candidate.get("bitDepth"))
+    """Score a Soulseek candidate based on speed, queue availability, and filename match.
+
+    Returns 0.0 (excluded from ranking) when the folder has fewer than half the
+    expected number of audio tracks.
+    """
+    if expected_track_count:
+        audio_count = _safe_int(candidate.get("audioFileCount"))
+        if audio_count < expected_track_count / 2:
+            return 0.0
+
     upload_speed = _safe_int(candidate.get("uploadSpeed"))
     has_slot = bool(candidate.get("hasFreeUploadSlot"))
     queue_len = _safe_int(candidate.get("queueLength"))
 
-    q_score = _audio_quality_score(extension, sample_rate, bit_depth)
     speed_score = min(upload_speed / 10_000_000.0, 1.0)
-    availability = 1.0 if has_slot else max(0.0, 1.0 - queue_len * 0.05)
+    # queue=0+slot → 1.0; queue=1 no slot → 0.5; queue=5 → 0.17
+    queue_score = 1.0 if has_slot and queue_len == 0 else 1.0 / (1.0 + queue_len)
+    name_score = _folder_match_score(candidate, album_hint)
 
-    if ranking_mode == "quality":
-        return q_score * 0.80 + speed_score * 0.10 + availability * 0.10
-    if ranking_mode == "speed":
-        return speed_score * 0.60 + availability * 0.20 + q_score * 0.20
-    return q_score * 0.55 + speed_score * 0.25 + availability * 0.20
+    return speed_score * 0.40 + queue_score * 0.40 + name_score * 0.20
 
 
 def rank_candidates(
     candidates: list[dict[str, Any]],
     *,
-    ranking_mode: str,
-    min_bitrate_kbps: int,
+    album_hint: str = "",
+    expected_track_count: int | None = None,
 ) -> list[dict[str, Any]]:
     scored: list[tuple[float, dict[str, Any]]] = []
     for c in candidates:
-        s = score_candidate(c, ranking_mode=ranking_mode, min_bitrate_kbps=min_bitrate_kbps)
+        s = score_candidate(c, album_hint=album_hint, expected_track_count=expected_track_count)
         if s > 0.0:
             scored.append((s, c))
     scored.sort(key=lambda x: x[0], reverse=True)

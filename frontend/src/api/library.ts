@@ -258,6 +258,7 @@ export interface Artist {
     album_count: number;
     item_count: number;
     total_size: number;
+    missing_count: number;
     last_item_added?: Date;
     last_album_added?: Date;
     first_item_added?: Date;
@@ -269,10 +270,15 @@ export interface Artist {
 export interface MissingAlbum {
     album: string;
     year?: number;
+    /** Real MB UUID, or "deezer:<id>" for Deezer-only entries. */
     mb_releasegroupid?: string;
+    /** Deezer album ID when Deezer data is available (set on both MB+Deezer merged and Deezer-only entries). */
+    deezer_id?: number | string | null;
     release_type?: string;
     cover_url?: string;
     track_count?: number;
+    /** Beets library album ID — set only for albums already in the library. */
+    library_album_id?: number;
 }
 
 export interface MissingAlbumTrack {
@@ -743,6 +749,15 @@ export function prefetchItemAudioData(id: number) {
 export type FileMetadata = {
     [key: string]: string | number | boolean | string[];
 };
+
+/** Remove an album from the beets library and delete its files from disk. */
+export async function deleteAlbumFromLibrary(albumId: number): Promise<void> {
+    const response = await fetch(`/library/album/${albumId}?delete`, { method: 'DELETE' });
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Delete failed (${response.status}): ${text}`);
+    }
+}
 
 export const fileMetadataQueryOptions = (path: string) => ({
     queryKey: ['file', path, 'metadata'],

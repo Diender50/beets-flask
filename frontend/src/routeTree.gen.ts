@@ -10,12 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VersionRouteImport } from './routes/version'
-import { Route as TerminalIndexRouteImport } from './routes/terminal/index'
 import { Route as SessiondraftIndexRouteImport } from './routes/sessiondraft/index'
 import { Route as InboxIndexRouteImport } from './routes/inbox/index'
 import { Route as DebugIndexRouteImport } from './routes/debug/index'
 import { Route as FrontpageIndexRouteImport } from './routes/_frontpage/index'
-import { Route as LibrarySearchRouteImport } from './routes/library/search'
 import { Route as LibraryDiscoveryRouteImport } from './routes/library/discovery'
 import { Route as DebugSortable_multiRouteImport } from './routes/debug/sortable_multi'
 import { Route as DebugSortableRouteImport } from './routes/debug/sortable'
@@ -47,11 +45,6 @@ const VersionRoute = VersionRouteImport.update({
   path: '/version',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TerminalIndexRoute = TerminalIndexRouteImport.update({
-  id: '/terminal/',
-  path: '/terminal/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SessiondraftIndexRoute = SessiondraftIndexRouteImport.update({
   id: '/sessiondraft/',
   path: '/sessiondraft/',
@@ -70,11 +63,6 @@ const DebugIndexRoute = DebugIndexRouteImport.update({
 const FrontpageIndexRoute = FrontpageIndexRouteImport.update({
   id: '/_frontpage/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LibrarySearchRoute = LibrarySearchRouteImport.update({
-  id: '/library/search',
-  path: '/library/search',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LibraryDiscoveryRoute = LibraryDiscoveryRouteImport.update({
@@ -222,12 +210,10 @@ export interface FileRoutesByFullPath {
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
-  '/library/search': typeof LibrarySearchRoute
   '/': typeof FrontpageIndexRoute
   '/debug': typeof DebugIndexRoute
   '/inbox': typeof InboxIndexRoute
   '/sessiondraft': typeof SessiondraftIndexRoute
-  '/terminal': typeof TerminalIndexRoute
   '/library/browse/artists': typeof LibraryBrowseArtistsRouteRouteWithChildren
   '/debug/design/buttons': typeof DebugDesignButtonsRoute
   '/debug/design/icons': typeof DebugDesignIconsRoute
@@ -256,12 +242,10 @@ export interface FileRoutesByTo {
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
-  '/library/search': typeof LibrarySearchRoute
   '/': typeof FrontpageIndexRoute
   '/debug': typeof DebugIndexRoute
   '/inbox': typeof InboxIndexRoute
   '/sessiondraft': typeof SessiondraftIndexRoute
-  '/terminal': typeof TerminalIndexRoute
   '/debug/design/buttons': typeof DebugDesignButtonsRoute
   '/debug/design/icons': typeof DebugDesignIconsRoute
   '/debug/design/loading': typeof DebugDesignLoadingRoute
@@ -288,12 +272,10 @@ export interface FileRoutesById {
   '/debug/sortable': typeof DebugSortableRoute
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
-  '/library/search': typeof LibrarySearchRoute
   '/_frontpage/': typeof FrontpageIndexRoute
   '/debug/': typeof DebugIndexRoute
   '/inbox/': typeof InboxIndexRoute
   '/sessiondraft/': typeof SessiondraftIndexRoute
-  '/terminal/': typeof TerminalIndexRoute
   '/library/browse/artists': typeof LibraryBrowseArtistsRouteRouteWithChildren
   '/debug/design/buttons': typeof DebugDesignButtonsRoute
   '/debug/design/icons': typeof DebugDesignIconsRoute
@@ -324,12 +306,10 @@ export interface FileRouteTypes {
     | '/debug/sortable'
     | '/debug/sortable_multi'
     | '/library/discovery'
-    | '/library/search'
     | '/'
     | '/debug'
     | '/inbox'
     | '/sessiondraft'
-    | '/terminal'
     | '/library/browse/artists'
     | '/debug/design/buttons'
     | '/debug/design/icons'
@@ -358,12 +338,10 @@ export interface FileRouteTypes {
     | '/debug/sortable'
     | '/debug/sortable_multi'
     | '/library/discovery'
-    | '/library/search'
     | '/'
     | '/debug'
     | '/inbox'
     | '/sessiondraft'
-    | '/terminal'
     | '/debug/design/buttons'
     | '/debug/design/icons'
     | '/debug/design/loading'
@@ -389,12 +367,10 @@ export interface FileRouteTypes {
     | '/debug/sortable'
     | '/debug/sortable_multi'
     | '/library/discovery'
-    | '/library/search'
     | '/_frontpage/'
     | '/debug/'
     | '/inbox/'
     | '/sessiondraft/'
-    | '/terminal/'
     | '/library/browse/artists'
     | '/debug/design/buttons'
     | '/debug/design/icons'
@@ -424,12 +400,10 @@ export interface RootRouteChildren {
   DebugSortableRoute: typeof DebugSortableRoute
   DebugSortable_multiRoute: typeof DebugSortable_multiRoute
   LibraryDiscoveryRoute: typeof LibraryDiscoveryRoute
-  LibrarySearchRoute: typeof LibrarySearchRoute
   FrontpageIndexRoute: typeof FrontpageIndexRoute
   DebugIndexRoute: typeof DebugIndexRoute
   InboxIndexRoute: typeof InboxIndexRoute
   SessiondraftIndexRoute: typeof SessiondraftIndexRoute
-  TerminalIndexRoute: typeof TerminalIndexRoute
   LibraryBrowseArtistsRouteRoute: typeof LibraryBrowseArtistsRouteRouteWithChildren
   DebugDesignButtonsRoute: typeof DebugDesignButtonsRoute
   DebugDesignIconsRoute: typeof DebugDesignIconsRoute
@@ -450,13 +424,6 @@ declare module '@tanstack/react-router' {
       path: '/version'
       fullPath: '/version'
       preLoaderRoute: typeof VersionRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/terminal/': {
-      id: '/terminal/'
-      path: '/terminal'
-      fullPath: '/terminal'
-      preLoaderRoute: typeof TerminalIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sessiondraft/': {
@@ -485,13 +452,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof FrontpageIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/library/search': {
-      id: '/library/search'
-      path: '/library/search'
-      fullPath: '/library/search'
-      preLoaderRoute: typeof LibrarySearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/library/discovery': {
@@ -737,12 +697,10 @@ const rootRouteChildren: RootRouteChildren = {
   DebugSortableRoute: DebugSortableRoute,
   DebugSortable_multiRoute: DebugSortable_multiRoute,
   LibraryDiscoveryRoute: LibraryDiscoveryRoute,
-  LibrarySearchRoute: LibrarySearchRoute,
   FrontpageIndexRoute: FrontpageIndexRoute,
   DebugIndexRoute: DebugIndexRoute,
   InboxIndexRoute: InboxIndexRoute,
   SessiondraftIndexRoute: SessiondraftIndexRoute,
-  TerminalIndexRoute: TerminalIndexRoute,
   LibraryBrowseArtistsRouteRoute: LibraryBrowseArtistsRouteRouteWithChildren,
   DebugDesignButtonsRoute: DebugDesignButtonsRoute,
   DebugDesignIconsRoute: DebugDesignIconsRoute,

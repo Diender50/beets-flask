@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 source ./docker/entrypoints/common.sh
 
 log_current_user
@@ -56,6 +56,12 @@ uvicorn beets_flask.server.app:create_app --port 5001 \
 uvicorn_pid=$!
 
 cd /repo/frontend
+
+# Ensure local CLI binaries (like vite) exist before first dev run.
+if [ ! -x /repo/frontend/node_modules/.bin/vite ]; then
+    echo "vite binary missing, installing frontend dependencies ..."
+    pnpm install --frozen-lockfile
+fi
 
 # pnpm run build:dev &  # use this for debugging with ios, port 5001 (no cors allowed)
 pnpm run dev & # normal dev, port 5173

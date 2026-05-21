@@ -5,6 +5,7 @@ Split artists by separators, and do some basic aggregation.
 
 import json
 import re
+import unicodedata
 import urllib.parse
 import urllib.request
 from typing import TYPE_CHECKING
@@ -18,8 +19,12 @@ from beets_flask.config import get_config
 from beets_flask.library_cache import (
     ARTISTS_CACHE_PREFIX,
     MISSING_CACHE_PREFIX,
+    get_db_missing_cache,
     get_json_cache,
+    get_missing_count_map,
     invalidate_artists_cache,
+    invalidate_artists_list_cache,
+    set_db_missing_cache,
     set_json_cache,
 )
 from beets_flask.logger import log
@@ -171,15 +176,20 @@ def _extract_valid_mbids(raw: object) -> list[str]:
     return [match.group(0).lower() for match in _MUSICBRAINZ_ID_RE.finditer(text)]
 
 
-def _find_artist_mbids(artist_name: str) -> set[str]:
+def _resolve_lib(lib=None):
+    return lib or g.lib
+
+
+def _find_artist_mbids(artist_name: str, lib=None) -> set[str]:
     normalized_artist_name = _normalize_artist_name(artist_name)
     mbids: set[str] = set()
+    beets_lib = _resolve_lib(lib)
 
-    with g.lib.transaction() as tx:
+    with beets_lib.transaction() as tx:
         rows = tx.query("SELECT id FROM items WHERE instr(artist, ?) > 0", (artist_name,))
 
     for row in rows:
-        item = g.lib.get_item(row[0])
+        item = beets_lib.get_item(row[0])
         if item is None:
             continue
 
@@ -197,18 +207,19 @@ def _find_artist_mbids(artist_name: str) -> set[str]:
     return mbids
 
 
-def _owned_release_group_ids(artist_name: str) -> set[str]:
+def _owned_release_group_ids(artist_name: str, lib=None) -> set[str]:
     normalized_artist_name = _normalize_artist_name(artist_name)
     release_group_ids: set[str] = set()
+    beets_lib = _resolve_lib(lib)
 
-    with g.lib.transaction() as tx:
+    with beets_lib.transaction() as tx:
         rows = tx.query(
             "SELECT id FROM albums WHERE instr(albumartist, ?) > 0",
             (artist_name,),
         )
 
     for row in rows:
-        album = g.lib.get_album(row[0])
+        album = beets_lib.get_album(row[0])
         if album is None:
             continue
 
@@ -253,10 +264,31 @@ def _release_type_from_mb(release_group: dict) -> str:
 def _normalize_for_dedup(title: str) -> str:
     """Normalize an album title for cross-source deduplication.
 
-    Strips common edition/remaster/bonus parenthetical suffixes so that
+    Handles Unicode punctuation variants (en-dash, curly apostrophe, …),
+    strips common edition/remaster/bonus parenthetical suffixes so that
     "Névrose" and "Névrose (Deluxe Edition)" are treated as the same release.
     """
-    t = title.casefold().strip()
+    # NFKC decomposes compatibility forms (fullwidth chars, ligatures, …)
+    t = unicodedata.normalize("NFKC", title).casefold().strip()
+
+    # Normalize all hyphen/dash variants → plain hyphen-minus U+002D
+    # Covers: HYPHEN ‐, NON-BREAKING HYPHEN ‑, FIGURE DASH ‒, EN DASH –,
+    #         EM DASH —, MINUS SIGN −, SMALL HYPHEN-MINUS ﹣, FULLWIDTH －
+    t = re.sub(r"[‐‑‒–—−﹘﹣－]", "-", t)
+
+    # Strip apostrophe/quote variants entirely for dedup robustness:
+    # "t’aime" == "taime" regardless of which Unicode apostrophe the source uses.
+    # \uXXXX escapes are resolved by Python at parse time → encoding-safe.
+    t = re.sub(
+        "['`´ʹʻʼʽ‘’‚‛′‵＇]",
+        "",
+        t,
+    )
+
+    # Normalize conjunction variants → & so "A & B", "A and B", "A et B" all match.
+    t = re.sub(r"\s+(?:and|et)\s+", " & ", t)
+    t = re.sub(r"\s*&\s*", " & ", t)
+
     # Remove parenthetical / bracketed edition suffixes
     t = re.sub(
         r"\s*[\(\[][^\)\]]*"
@@ -272,18 +304,37 @@ def _normalize_for_dedup(title: str) -> str:
     return re.sub(r"[\s\-_:]+$", "", t).strip()
 
 
-def _owned_album_titles_normalized(artist_name: str) -> set[str]:
+def _is_prefix_single_of_owned_title(
+    candidate_title_dedup: str,
+    owned_titles_dedup: set[str],
+) -> bool:
+    """Heuristic: Deezer single title is strict prefix of an owned album title.
+
+    Example: single "ten" while owned album "ten days".
+    """
+    t = candidate_title_dedup.strip()
+    if not t or " " in t:
+        return False
+
+    for owned in owned_titles_dedup:
+        if owned.startswith(f"{t} "):
+            return True
+    return False
+
+
+def _owned_album_titles_normalized(artist_name: str, lib=None) -> set[str]:
     normalized_artist_name = _normalize_artist_name(artist_name)
     titles: set[str] = set()
+    beets_lib = _resolve_lib(lib)
 
-    with g.lib.transaction() as tx:
+    with beets_lib.transaction() as tx:
         rows = tx.query(
             "SELECT id FROM albums WHERE instr(albumartist, ?) > 0",
             (artist_name,),
         )
 
     for row in rows:
-        album = g.lib.get_album(row[0])
+        album = beets_lib.get_album(row[0])
         if album is None:
             continue
         if normalized_artist_name not in {
@@ -464,9 +515,12 @@ def _best_release_tracks_for_group(release_group_id: str) -> list[dict[str, str 
     return tracks
 
 
-def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | int | None]]:
+def _missing_albums_from_musicbrainz(
+    artist_name: str,
+    lib=None,
+) -> list[dict[str, str | int | None]]:
     _configure_musicbrainz_client()
-    artist_mbids = _find_artist_mbids(artist_name)
+    artist_mbids = _find_artist_mbids(artist_name, lib=lib)
     if not artist_mbids:
         # Artist not in beets library — search MB by name
         artist_mbids = _search_artist_mbid_from_mb(artist_name)
@@ -480,14 +534,16 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
         sorted(artist_mbids),
     )
 
-    owned_release_group_ids = _owned_release_group_ids(artist_name)
-    owned_titles = _owned_album_titles_normalized(artist_name)
+    owned_release_group_ids = _owned_release_group_ids(artist_name, lib=lib)
+    owned_titles = _owned_album_titles_normalized(artist_name, lib=lib)
     missing_by_release_group: dict[str, dict[str, str | int | None]] = {}
     had_successful_lookup = False
 
     for artist_mbid in sorted(artist_mbids):
         try:
-            response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+            response = musicbrainzngs.browse_release_groups(
+                artist=artist_mbid, includes=["artist-credits"]
+            )
             had_successful_lookup = True
         except Exception as exc:
             log.warning(
@@ -503,6 +559,14 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
             release_group_id = release_group.get("id")
             if not release_group_id or release_group_id in owned_release_group_ids:
                 continue
+            # Skip release groups where this artist is only a guest/featured artist.
+            # The first entry in artist-credit is the primary credited artist.
+            artist_credit = release_group.get("artist-credit") or []
+            first_credit = artist_credit[0] if artist_credit else None
+            if first_credit:
+                first_mbid = (first_credit.get("artist") or {}).get("id")
+                if first_mbid and first_mbid not in artist_mbids:
+                    continue
             # Also filter by title: catches imported albums whose mb_releasegroupid
             # doesn't match (e.g. beets set a different release ID, or no ID at all)
             title_key = _normalize_for_dedup(release_group.get("title", ""))
@@ -531,7 +595,9 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
             )
         for artist_mbid in extra_mbids:
             try:
-                response = musicbrainzngs.browse_release_groups(artist=artist_mbid)
+                response = musicbrainzngs.browse_release_groups(
+                    artist=artist_mbid, includes=["artist-credits"]
+                )
             except Exception:
                 continue
 
@@ -539,6 +605,12 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
                 release_group_id = release_group.get("id")
                 if not release_group_id or release_group_id in owned_release_group_ids:
                     continue
+                artist_credit = release_group.get("artist-credit") or []
+                first_credit = artist_credit[0] if artist_credit else None
+                if first_credit:
+                    first_mbid = (first_credit.get("artist") or {}).get("id")
+                    if first_mbid and first_mbid not in artist_mbids:
+                        continue
                 title_key = _normalize_for_dedup(release_group.get("title", ""))
                 if title_key in owned_titles:
                     continue
@@ -560,13 +632,14 @@ def _missing_albums_from_musicbrainz(artist_name: str) -> list[dict[str, str | i
 def _missing_albums_from_deezer(
     artist_name: str,
     owned_titles_dedup: set[str],
-    mb_titles_dedup: set[str],
-) -> list[dict[str, str | int | None]]:
-    """Query the Deezer public API for albums not already covered by MusicBrainz or owned.
+) -> dict[str, dict[str, str | int | None]]:
+    """Query the Deezer public API for albums not already owned, keyed by dedup title.
 
-    Uses `_normalize_for_dedup` for cross-source title matching so that edition
-    variants (e.g. "Album (Deluxe)") are not listed twice.  Deezer-only results
-    carry "deezer:<id>" as the release-group identifier.
+    Returns a dict keyed by normalised title so the caller can merge with MusicBrainz
+    results. Within Deezer, duplicate editions of the same album (e.g. Deluxe, Explicit)
+    are collapsed to the first-seen entry (first-wins keeps the canonical edition that
+    Deezer returns first).  The ``mb_releasegroupid`` field is intentionally absent here;
+    the caller sets it appropriately depending on whether a matching MB entry exists.
     """
     try:
         search_url = (
@@ -584,57 +657,117 @@ def _missing_albums_from_deezer(
                 break
 
         if not artist_id:
-            return []
+            return {}
 
         albums_url = f"https://api.deezer.com/artist/{artist_id}/albums?limit=200"
         with urllib.request.urlopen(albums_url, timeout=8) as req:  # noqa: S310
             albums_data = json.loads(req.read())
 
-        results: list[dict[str, str | int | None]] = []
+        # Keyed by dedup_key — first-wins deduplication across Deezer editions.
+        by_dedup_key: dict[str, dict[str, str | int | None]] = {}
         for album in albums_data.get("data", []):
             title = album.get("title", "")
             dedup_key = _normalize_for_dedup(title)
-            if dedup_key in owned_titles_dedup or dedup_key in mb_titles_dedup:
+            if dedup_key in owned_titles_dedup:
+                continue
+
+            record_type = str(album.get("record_type", "album"))
+            if record_type.casefold() == "single" and _is_prefix_single_of_owned_title(
+                dedup_key,
+                owned_titles_dedup,
+            ):
+                continue
+
+            # First-wins: skip later Deezer editions of an already-seen canonical title.
+            if dedup_key in by_dedup_key:
                 continue
 
             year_str = str(album.get("release_date", "") or "")
             year: int | None = int(year_str[:4]) if len(year_str) >= 4 else None
             deezer_id = album.get("id")
-            
-            # Fetch individual album to get nb_tracks (not available in artist albums list)
+
+            # Fetch individual album to verify main artist and get nb_tracks.
+            # /artist/{id}/albums also returns albums where the artist is only a
+            # contributor (feat.), so we skip those by checking album_detail["artist"]["id"].
             track_count: int | None = None
             if deezer_id:
                 try:
                     album_url = f"https://api.deezer.com/album/{deezer_id}"
                     with urllib.request.urlopen(album_url, timeout=5) as req:  # noqa: S310
                         album_detail = json.loads(req.read())
+                    main_artist_id = (album_detail.get("artist") or {}).get("id")
+                    if main_artist_id and int(main_artist_id) != artist_id:
+                        continue
                     track_count = album_detail.get("nb_tracks")
                 except Exception:
                     pass
 
-            results.append({
+            by_dedup_key[dedup_key] = {
                 "album": title,
                 "year": year,
-                "mb_releasegroupid": f"deezer:{deezer_id}" if deezer_id else None,
-                "release_type": str(album.get("record_type", "album")),
+                "deezer_id": deezer_id,
+                "release_type": record_type,
                 "cover_url": album.get("cover_medium") or album.get("cover") or None,
                 "track_count": track_count,
-            })
-        return results
+            }
+        return by_dedup_key
 
     except Exception:
-        return []
+        return {}
 
 
-def _missing_albums_from_sources(artist_name: str) -> list[dict[str, str | int | None]]:
-    """Return missing albums for an artist merged from MusicBrainz and Deezer, sorted by year descending."""
-    mb_missing = _missing_albums_from_musicbrainz(artist_name)
-    mb_titles_dedup = {_normalize_for_dedup(str(m["album"])) for m in mb_missing}
-    owned_titles = _owned_album_titles_normalized(artist_name)
+def _missing_albums_from_sources(
+    artist_name: str,
+    lib=None,
+) -> list[dict[str, str | int | None]]:
+    """Return missing albums merged from MusicBrainz and Deezer, sorted by year descending.
 
-    deezer_missing = _missing_albums_from_deezer(artist_name, owned_titles, mb_titles_dedup)
+    Merging strategy:
+    - MB albums whose normalised title matches a Deezer album are enriched with
+      ``deezer_id`` (and ``cover_url`` / ``track_count`` when MB lacks them).
+    - Deezer albums with no MB counterpart become standalone entries carrying
+      ``mb_releasegroupid = "deezer:<id>"`` for backward-compat with the download flow.
+    - Deezer editions of the same album (Deluxe, Explicit, …) are collapsed to one
+      entry before the merge step.
+    """
+    mb_missing = _missing_albums_from_musicbrainz(artist_name, lib=lib)
+    owned_titles = _owned_album_titles_normalized(artist_name, lib=lib)
 
-    all_missing = mb_missing + deezer_missing
+    deezer_by_key = _missing_albums_from_deezer(artist_name, owned_titles)
+
+    # Enrich MB entries with Deezer data when title matches; track which Deezer
+    # entries were consumed so we can emit the remainder as standalone rows.
+    consumed_deezer_keys: set[str] = set()
+    enriched_mb: list[dict[str, str | int | None]] = []
+    for m in mb_missing:
+        dk = _normalize_for_dedup(str(m["album"]))
+        entry = dict(m)
+        deezer_match = deezer_by_key.get(dk)
+        if deezer_match:
+            consumed_deezer_keys.add(dk)
+            entry["deezer_id"] = deezer_match["deezer_id"]
+            if not entry.get("cover_url"):
+                entry["cover_url"] = deezer_match.get("cover_url")
+            if not entry.get("track_count"):
+                entry["track_count"] = deezer_match.get("track_count")
+        enriched_mb.append(entry)
+
+    # Deezer-only entries: keep backward-compat mb_releasegroupid scheme.
+    deezer_exclusive: list[dict[str, str | int | None]] = []
+    for dk, deezer in deezer_by_key.items():
+        if dk in consumed_deezer_keys:
+            continue
+        deezer_id = deezer.get("deezer_id")
+        deezer_exclusive.append({
+            "album": deezer["album"],
+            "year": deezer.get("year"),
+            "mb_releasegroupid": f"deezer:{deezer_id}" if deezer_id else None,
+            "release_type": deezer.get("release_type"),
+            "cover_url": deezer.get("cover_url"),
+            "track_count": deezer.get("track_count"),
+        })
+
+    all_missing = enriched_mb + deezer_exclusive
     return sorted(
         all_missing,
         key=lambda a: (
@@ -645,7 +778,123 @@ def _missing_albums_from_sources(artist_name: str) -> list[dict[str, str | int |
     )
 
 
-def get_artists_pandas(table: str, artist: str | None = None, include_size: bool = False) -> pd.DataFrame:
+def recompute_missing_cache_for_artist(artist_name: str, lib=None) -> list[dict[str, str | int | None]]:
+    """Compute and persist missing albums for one artist (Redis + DB)."""
+    missing = _missing_albums_from_sources(artist_name, lib=lib)
+    payload = pd.DataFrame(missing).to_json(orient="records")
+    cache_key = _missing_cache_key(artist_name)
+    set_json_cache(cache_key, payload, MISSING_CACHE_TTL_SECONDS)
+    set_db_missing_cache(artist_name, payload)
+    return missing
+
+
+def _clean_cached_missing_payload(
+    artist_name: str,
+    payload: str,
+    lib=None,
+) -> tuple[str, bool]:
+    """Drop stale cached missing albums that are now owned in library."""
+    try:
+        rows = json.loads(payload or "[]")
+    except Exception:
+        return payload, False
+
+    if not isinstance(rows, list):
+        return payload, False
+
+    owned_titles = _owned_album_titles_normalized(artist_name, lib=lib)
+    if not owned_titles:
+        return payload, False
+
+    cleaned = [
+        row
+        for row in rows
+        if _normalize_for_dedup(str((row or {}).get("album", ""))) not in owned_titles
+    ]
+    changed = len(cleaned) != len(rows)
+    if not changed:
+        return payload, False
+
+    cleaned_payload = pd.DataFrame(cleaned).to_json(orient="records")
+    return cleaned_payload, True
+
+
+def _all_library_artist_names(lib=None) -> list[str]:
+    """Return deduplicated artist names for full missing-albums cache warmup."""
+    artists_albums = get_artists_pandas("albums", lib=lib)
+    artists_items = get_artists_pandas("items", lib=lib)
+    names = {
+        str(name).strip()
+        for name in [*artists_albums["artist"].tolist(), *artists_items["artist"].tolist()]
+        if str(name).strip()
+    }
+    return sorted(names, key=lambda n: n.casefold())
+
+
+def _cached_missing_artist_names() -> set[str]:
+    """Return artist names currently present in the persistent missing cache table."""
+    try:
+        from beets_flask.database.models.states import MissingAlbumCacheInDb
+        from beets_flask.database.setup import session_factory
+
+        session = session_factory()
+        try:
+            rows = session.query(MissingAlbumCacheInDb.artist_name).all()
+            return {str(row[0]).strip() for row in rows if row and str(row[0]).strip()}
+        finally:
+            session.close()
+    except Exception as exc:
+        log.warning("Could not read missing cache table: %s", exc)
+        return set()
+
+
+def ensure_missing_cache_warmed_for_all_artists(
+    *,
+    lib=None,
+    force_recompute: bool = False,
+) -> dict[str, int | bool]:
+    """Ensure all library artists have a persistent missing-albums cache entry.
+
+    If ``force_recompute`` is False, only artists missing from the DB cache table are
+    computed. If True, every artist is recomputed.
+    """
+    artist_names = _all_library_artist_names(lib=lib)
+    cached_names = _cached_missing_artist_names()
+
+    if force_recompute:
+        target_names = artist_names
+    else:
+        target_names = [name for name in artist_names if name not in cached_names]
+
+    warmed = 0
+    failed = 0
+    for artist_name in target_names:
+        try:
+            recompute_missing_cache_for_artist(artist_name, lib=lib)
+            warmed += 1
+        except Exception as exc:  # pragma: no cover
+            failed += 1
+            log.warning("Failed warming missing cache for artist=%s: %s", artist_name, exc)
+
+    return {
+        "ok": failed == 0,
+        "artists_total": len(artist_names),
+        "artists_cached_before": len(cached_names & set(artist_names)),
+        "artists_warmed": warmed,
+        "artists_failed": failed,
+    }
+
+
+def _missing_count_by_artist_name() -> dict[str, int]:
+    return get_missing_count_map()
+
+
+def get_artists_pandas(
+    table: str,
+    artist: str | None = None,
+    include_size: bool = False,
+    lib=None,
+) -> pd.DataFrame:
     """Get all artists from the database using pandas.
 
     Returns
@@ -700,7 +949,8 @@ def get_artists_pandas(table: str, artist: str | None = None, include_size: bool
             else:
                 query += f" AND instr(artist, ?) > 0"
 
-    with g.lib.transaction() as tx:
+    beets_lib = _resolve_lib(lib)
+    with beets_lib.transaction() as tx:
         rows = tx.query(query, artists) if artists else tx.query(query)
 
     # Read from the database
@@ -801,6 +1051,16 @@ async def all_artists(artist_name: str | None = None):
     artists["item_count"] = artists["item_count"].fillna(0).astype(int)
     artists["total_size"] = artists["total_size"].fillna(0).astype(int)
 
+    missing_count_map = _missing_count_by_artist_name()
+    # Normalize both sides to NFC to handle Unicode encoding differences (NFC vs NFD)
+    # between beets library strings and the stored cache keys.
+    artists["missing_count"] = (
+        artists["artist"]
+        .apply(lambda n: missing_count_map.get(unicodedata.normalize("NFC", str(n)).strip(), 0))
+        .fillna(0)
+        .astype(int)
+    )
+
     if artist_name is not None:
         if artists.empty:
             # Return a stub for followed-only artists (not yet in beets library)
@@ -814,6 +1074,7 @@ async def all_artists(artist_name: str | None = None):
                     "album_count": 0,
                     "item_count": 0,
                     "total_size": 0,
+                    "missing_count": 0,
                     "followed": True,
                 }
                 return Response(_json.dumps(stub), mimetype="application/json")
@@ -832,8 +1093,10 @@ async def all_artists(artist_name: str | None = None):
 async def missing_albums_by_artist(artist_name: str):
     """Get missing albums for artist via Beets artist metadata + MusicBrainz.
 
-    Uses exact artist MBIDs from Beets item metadata so featured artists without
-    owned albums can still resolve their own missing release groups.
+    Cache hierarchy:
+      1. Redis (fast, 1-hour TTL, lost on reboot)
+      2. SQLite DB (persistent, survives reboot, invalidated on import)
+      3. Computed fresh from MusicBrainz + Deezer
     """
     cache_key = _missing_cache_key(artist_name)
     refresh = request.args.get("refresh", "").strip().lower() in {
@@ -847,30 +1110,60 @@ async def missing_albums_by_artist(artist_name: str):
         refresh,
     )
     if not refresh:
+        # 1. Redis
         cached = get_json_cache(cache_key)
         if cached is not None:
-            log.info("missing_albums cache_hit artist=%s", artist_name)
+            cached, changed = _clean_cached_missing_payload(artist_name, cached)
+            if changed:
+                set_json_cache(cache_key, cached, MISSING_CACHE_TTL_SECONDS)
+            # Always sync Redis → DB so that _missing_count_by_artist_name() is accurate.
+            set_db_missing_cache(artist_name, cached)
+            log.info("missing_albums redis_hit artist=%s", artist_name)
             return Response(cached, mimetype="application/json")
-        log.info("missing_albums cache_miss artist=%s", artist_name)
+        log.info("missing_albums redis_miss artist=%s", artist_name)
+
+        # 2. DB (persistent across reboots)
+        db_cached = get_db_missing_cache(artist_name)
+        if db_cached is not None:
+            db_cached, changed = _clean_cached_missing_payload(artist_name, db_cached)
+            log.info("missing_albums db_hit artist=%s", artist_name)
+            # Restore Redis so subsequent requests are fast
+            set_json_cache(cache_key, db_cached, MISSING_CACHE_TTL_SECONDS)
+            if changed:
+                set_db_missing_cache(artist_name, db_cached)
+            return Response(db_cached, mimetype="application/json")
+        log.info("missing_albums db_miss artist=%s", artist_name)
     else:
         log.info("missing_albums force_refresh artist=%s", artist_name)
 
+    # 3. Compute fresh — clear only the artists-list Redis cache (not missing caches
+    # of other artists) so the updated missing_count is served on the next request.
+    invalidate_artists_list_cache()
     try:
-        missing = _missing_albums_from_sources(artist_name)
+        missing = recompute_missing_cache_for_artist(artist_name)
     except musicbrainzngs.musicbrainz.MusicBrainzError as exc:
         log.warning(
             "missing_albums musicbrainz_error artist=%s error=%s",
             artist_name,
             exc,
         )
-        # Do not cache the error result — return empty without writing to Redis
-        # so the next request retries MusicBrainz instead of serving stale "[]" for an hour.
+        # Do not cache the error — next request will retry instead of serving stale "[]".
         return Response("[]", mimetype="application/json")
 
     payload = pd.DataFrame(missing).to_json(orient="records")
-    set_json_cache(cache_key, payload, MISSING_CACHE_TTL_SECONDS)
     log.info("missing_albums computed artist=%s count=%s", artist_name, len(missing))
     return Response(payload, mimetype="application/json")
+
+
+@artists_bp.route("/artists/missing/cache/warm-all", methods=["POST"])
+async def warm_all_missing_albums_cache():
+    """Compute and persist missing-albums cache for every library artist.
+
+    By default only uncached artists are computed. Set ``force=1`` to recompute all.
+    """
+    force = request.args.get("force", "").strip().lower() in {"1", "true", "yes"}
+    result = ensure_missing_cache_warmed_for_all_artists(force_recompute=force)
+    return jsonify(result)
 
 
 @artists_bp.route("/missing-album-tracks", methods=["GET"])

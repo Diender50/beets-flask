@@ -15,6 +15,8 @@ classifiers = [
 ]
 dependencies = [
     "quart>=0.20.0",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0",
     "confuse>=2.0.1",
     "beets==2.5.1",
     "sqlalchemy>=2.0.35",

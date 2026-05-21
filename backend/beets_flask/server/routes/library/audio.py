@@ -292,19 +292,26 @@ async def transcode_to_webm(file_path: str) -> AsyncIterator[bytes]:
         await ffmpeg_streamer.start(*[
             "-hide_banner",
             "-loglevel", "error",
+            "-nostdin",                         # Disable interactive stdin reading
             "-fflags", "nobuffer",
             "-flush_packets", "0",
             "-probesize", "32",
-            "-i", str(file_path),               # file input
+            "-i", str(file_path),               # file input (not stdin)
             "-vn", "-sn", "-dn",                # DROP video streams
             "-preset", "ultrafast",             # Faster MP3 encoding
             "-map_metadata", "-1",              # Skip all metadata
             "-map", "0:a",                      # Map all audio streams
             "-codec:a", "libopus",
             "-b:a", "128k",
-            "-f", "webm",                        # Force MP3 format for stdout
+            "-f", "webm",                       # Output format
             "-",                                # Output to stdout
         ])
+        # Close stdin immediately — FFmpeg reads from the file, not stdin.
+        # Without this, FFmpeg keeps stdin open and tries to parse binary
+        # file data written by stream_file() as interactive commands.
+        if ffmpeg_streamer.process and ffmpeg_streamer.process.stdin:
+            ffmpeg_streamer.process.stdin.close()
+        return ffmpeg_streamer.stream()
     return ffmpeg_streamer.stream_file(file_path)
 
 

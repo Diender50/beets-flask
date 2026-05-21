@@ -4,6 +4,7 @@ import reactDev from "@vitejs/plugin-react-swc";
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import tsconfigPaths from "vite-tsconfig-paths";
 import svgr from "vite-plugin-svgr";
+import { VitePWA } from "vite-plugin-pwa";
 
 const ReactCompilerConfig = {
     target: "19", // '17' | '18' | '19'
@@ -28,6 +29,21 @@ export default defineConfig(({ mode }) => {
                   })
                 : reactDev(),
             svgr(),
+            VitePWA({
+                registerType: 'autoUpdate',
+                manifest: {
+                    name: 'Beets Flask',
+                    short_name: 'Beets',
+                    theme_color: '#121212',
+                    background_color: '#121212',
+                    display: 'standalone',
+                    start_url: '/',
+                    icons: [
+                        { src: '/logo_beets.png', sizes: '192x192', type: 'image/png' },
+                        { src: '/logo_beets.png', sizes: '512x512', type: 'image/png' },
+                    ],
+                },
+            }),
         ],
         // not minifying helped when debugging in production mode
         // we can enable this again when the code base is a bit more mature.

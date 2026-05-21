@@ -271,6 +271,7 @@ async def enqueue_download(
     timeout_seconds: int = 20,
     auth_header: str | None = None,
     arl: str | None = None,
+    bitrate: str = "1",
 ) -> tuple[bool, str | None]:
     """Request deemix GUI service to download album by deezer id.
 
@@ -306,7 +307,7 @@ async def enqueue_download(
         queue_url = f"{base_url.rstrip('/')}/api/addToQueue"
         payload: dict[str, Any] = {
             "url": f"https://www.deezer.com/album/{deezer_id}",
-            "bitrate": "1",
+            "bitrate": str(bitrate or "1"),
         }
         async with session.post(queue_url, json=payload) as resp:
             text = await resp.text()

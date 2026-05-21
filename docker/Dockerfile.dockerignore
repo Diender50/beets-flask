@@ -1,0 +1,31 @@
+# Dockerfile-specific ignore rules (used for docker/Dockerfile).
+# Keep build context minimal and deterministic.
+*
+
+# Backend files needed by Dockerfile
+!backend/beets_flask/**
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/main.py
+!backend/launch_*.py
+!backend/generate_types.py
+!backend/*.py
+
+# Frontend build inputs
+!frontend/src/**
+!frontend/public/**
+!frontend/index.html
+!frontend/package.json
+!frontend/pnpm-lock.yaml
+!frontend/eslint.config.js
+!frontend/prettier.config.js
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+
+# Top-level files needed by Dockerfile
+!README.md
+!LICENSE
+
+# Entrypoints used by image
+!docker/entrypoints/entrypoint*.sh
+!docker/entrypoints/common.sh

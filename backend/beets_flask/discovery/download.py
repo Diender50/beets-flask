@@ -168,8 +168,6 @@ async def run_auto_download(
     slskd_base_url: str,
     slskd_api_key: str | None,
     slskd_timeout_seconds: int,
-    ranking_mode: str,
-    min_bitrate_kbps: int,
 ) -> None:
     query = f"{artist} {album}".strip()
     _update_job(
@@ -214,18 +212,14 @@ async def run_auto_download(
             album=album,
             timeout_seconds=slskd_timeout_seconds,
         )
-        ranked = slskd.rank_candidates(
-            candidates,
-            ranking_mode=ranking_mode,
-            min_bitrate_kbps=min_bitrate_kbps,
-        )
+        ranked = slskd.rank_candidates(candidates, album_hint=album)
         if not ranked:
             return {"provider": "slskd", "ok": False, "reason": "no slskd match"}
         best = ranked[0]
         return {
             "provider": "slskd",
             "ok": True,
-            "score": float(slskd.score_candidate(best, ranking_mode=ranking_mode, min_bitrate_kbps=min_bitrate_kbps)),
+            "score": float(slskd.score_candidate(best, album_hint=album)),
             "match": best,
         }
 
@@ -295,8 +289,6 @@ async def run_auto_download(
         base_url=slskd_base_url,
         api_key=slskd_api_key,
         timeout_seconds=slskd_timeout_seconds,
-        ranking_mode=ranking_mode,
-        min_bitrate_kbps=min_bitrate_kbps,
     )
 
 
@@ -309,6 +301,7 @@ async def run_deemix_download(
     timeout_seconds: int,
     auth_header: str | None,
     arl: str | None = None,
+    bitrate: str = "1",
 ) -> None:
     _update_job(job_id, status=DownloadStatus.DOWNLOADING, output_path=output_path, stage="queued", progress_message="Waiting to queue deemix download")
     log.info("Deemix download start %s", _job_summary(job_id, deezer_id=deezer_id, output=output_path))
@@ -321,6 +314,7 @@ async def run_deemix_download(
             timeout_seconds=timeout_seconds,
             auth_header=auth_header,
             arl=arl,
+            bitrate=bitrate,
         )
         if ok:
             _update_job(job_id, stage="done", progress_message="Deemix accepted download request")
@@ -356,8 +350,6 @@ async def run_slskd_download(
     base_url: str,
     api_key: str | None,
     timeout_seconds: int,
-    ranking_mode: str,
-    min_bitrate_kbps: int,
     selected_candidate: dict | None = None,
 ) -> None:
     _update_job(job_id, status=DownloadStatus.DOWNLOADING, output_path=output_path, stage="searching", progress_message="Searching slskd for matching release")
@@ -379,11 +371,7 @@ async def run_slskd_download(
                 timeout_seconds=timeout_seconds,
             )
             _update_job(job_id, stage="ranking", progress_message=f"Ranked {len(candidates)} slskd candidates")
-            ranked = slskd.rank_candidates(
-                candidates,
-                ranking_mode=ranking_mode,
-                min_bitrate_kbps=min_bitrate_kbps,
-            )
+            ranked = slskd.rank_candidates(candidates, album_hint=album)
         log.info(
             "Slskd candidates ranked %s count=%s",
             _job_summary(job_id, query=query),
@@ -401,11 +389,7 @@ async def run_slskd_download(
             return
 
         best = ranked[0]
-        best_score = slskd.score_candidate(
-            best,
-            ranking_mode=ranking_mode,
-            min_bitrate_kbps=min_bitrate_kbps,
-        )
+        best_score = slskd.score_candidate(best, album_hint=album)
         _update_job(job_id, selected_match={
             "username": best.get("username") or best.get("user"),
             "filename": best.get("filename") or best.get("fileName"),

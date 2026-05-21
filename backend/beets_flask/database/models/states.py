@@ -65,6 +65,26 @@ class FollowedArtistInDb(Base):
         self.added_at = added_at
 
 
+class MissingAlbumCacheInDb(Base):
+    """Persistent cache for missing albums per artist.
+
+    Survives container reboots unlike the Redis cache.
+    Updated on every import that affects the artist; no TTL applied.
+    """
+
+    __tablename__ = "missing_album_cache"
+
+    # Base provides `id` (UUID PK), `created_at`, `updated_at`.
+    # `artist_name` is the exact lookup key used in the route/cache layer.
+    artist_name: Mapped[str] = mapped_column(unique=True, index=True, nullable=False)
+    albums_json: Mapped[str] = mapped_column()  # JSON-serialised list[MissingAlbum]
+
+    def __init__(self, artist_name: str, albums_json: str):
+        super().__init__()
+        self.artist_name = artist_name
+        self.albums_json = albums_json
+
+
 class FolderInDb(Base):
     """Represents a folder on disk, to keep track of changes.
 

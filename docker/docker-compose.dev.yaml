@@ -9,7 +9,8 @@ services:
         image: beets-flask
         restart: unless-stopped
         ports:
-            - "5001:5001" # for beets-flask
+            - "5001:5001" # for beets-flask (Quart)
+            - "5002:5002" # for beets-flask v2 (FastAPI)
             - "5173:5173" # for vite dev server
         environment:
             # 502 is default on macos, 1000 on linux
@@ -36,9 +37,16 @@ services:
 
             # for development. (disable if target is `prod`)
             - ../:/repo/
+            # keep frontend dependencies off host FS to avoid Windows lock/sync issues
+            - frontend_node_modules:/repo/frontend/node_modules
+            - frontend_pnpm_store:/repo/frontend/.pnpm-store
         networks:
             - beetsflask
 
 networks:
     beetsflask:
         name: beetsflask
+
+volumes:
+    frontend_node_modules:
+    frontend_pnpm_store:

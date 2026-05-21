@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from quart import Quart
+from beets.ui import _open_library
 
 from ..config.flask_config import ServerConfig, init_server_config
 from ..logger import log
@@ -41,6 +42,39 @@ def create_app(config: str | ServerConfig | None = None) -> Quart:
 
     register_routes(app)
     register_socketio(app)
+
+    # Warm once at process startup. This is intentionally synchronous so the app
+    # starts in a known cache-ready state even when Quart lifecycle hooks are skipped
+    # by ASGI server integration details.
+    warm_enabled = os.getenv("BEETSFLASK_WARM_MISSING_ON_START", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    if warm_enabled:
+        from ..config import get_config
+        from .routes.library.artists import ensure_missing_cache_warmed_for_all_artists
+
+        lib = None
+        try:
+            lib = _open_library(get_config())
+            result = ensure_missing_cache_warmed_for_all_artists(lib=lib, force_recompute=False)
+            log.info(
+                "missing_albums startup warmup total=%s cached_before=%s warmed=%s failed=%s",
+                result["artists_total"],
+                result["artists_cached_before"],
+                result["artists_warmed"],
+                result["artists_failed"],
+            )
+        except Exception as exc:
+            log.warning("missing_albums startup warmup failed: %s", exc)
+        finally:
+            close_func = getattr(lib, "close", None)
+            if callable(close_func):
+                try:
+                    close_func()
+                except Exception:
+                    pass
 
     log.debug("Quart app created!")
 

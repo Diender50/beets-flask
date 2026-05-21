@@ -1,8 +1,7 @@
-import { FolderClockIcon, InfoIcon, SettingsIcon, TagIcon } from 'lucide-react';
+import { FolderClockIcon, InfoIcon, InboxIcon, SettingsIcon, TagIcon } from 'lucide-react';
 import { useState } from 'react';
 import {
     Box,
-    BoxProps,
     DialogContent,
     IconButton,
     Typography,
@@ -22,6 +21,7 @@ import {
     PenaltyTypeIcon,
 } from '@/components/common/icons';
 import { PageWrapper } from '@/components/common/page';
+
 import {
     ActionIcon,
     RefreshAllFoldersButton,
@@ -44,111 +44,43 @@ function RouteComponent() {
     const { data: inboxes } = useSuspenseQuery(inboxQueryOptions());
 
     return (
-        <>
-            <PageWrapper
-                sx={(theme) => ({
-                    display: 'flex',
-                    flexDirection: 'column',
-                    minHeight: '100%',
-                    alignItems: 'center',
-                    paddingTop: theme.spacing(1),
-                    paddingInline: theme.spacing(0.5),
-                    [theme.breakpoints.up('laptop')]: {
-                        height: 'auto',
-                        paddingTop: theme.spacing(2),
-                        paddingInline: theme.spacing(1),
-                    },
-                })}
-            >
-                <PageHeader inboxes={inboxes} />
-                <Box
-                    sx={{
-                        width: '100%',
-                        display: 'flex',
-                        gap: 2,
-                        flexDirection: 'column',
-                    }}
-                >
-                    {inboxes.map((folder) => (
-                        <FolderSelectionProvider key={folder.full_path}>
-                            <InboxCard folder={folder} />
-                        </FolderSelectionProvider>
-                    ))}
-                </Box>
-            </PageWrapper>
-        </>
-    );
-}
-
-/** A simple route header showing
- * a title and some
- * additional information.
- */
-function PageHeader({ inboxes, ...props }: { inboxes: Folder[] } & BoxProps) {
-    return (
-        <Box
-            sx={(theme) => ({
-                display: 'grid',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: 2,
-                width: '100%',
-                gridTemplateColumns: '1fr',
-                gridTemplateRows: '1fr',
-                paddingInline: 2,
-
-                [theme.breakpoints.down('laptop')]: {
-                    paddingTop: 1,
-                    paddingInline: 1,
-                },
-            })}
-            {...props}
-        >
-            <Typography
-                variant="h4"
-                component="div"
-                fontWeight="bold"
-                sx={{
-                    gridColumn: '1',
-                    gridRow: '1',
-                    textAlign: 'center',
-                }}
-            >
-                Your inbox{inboxes.length > 1 ? 'es' : ''}
-            </Typography>
+        <PageWrapper sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+            {/* Page header */}
             <Box
                 sx={{
-                    alignSelf: 'center',
                     display: 'flex',
+                    alignItems: 'center',
                     gap: 1,
-                    zIndex: 1,
-                    borderRadius: 1,
-                    color: 'secondary.muted',
-                    gridColumn: '1',
-                    gridRow: '1',
-                    justifySelf: 'flex-end',
+                    px: 2,
+                    py: 1.5,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    flexShrink: 0,
                 }}
             >
+                <InboxIcon size={16} style={{ opacity: 0.5 }} />
+                <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
+                    Inbox{inboxes.length > 1 ? 'es' : ''}
+                </Typography>
+                <Typography variant="caption" color="text.disabled">
+                    {inboxes.length}
+                </Typography>
+                <RefreshAllFoldersButton />
                 <InfoDescription />
             </Box>
-            <Box
-                sx={{
-                    alignSelf: 'center',
-                    display: 'flex',
-                    gap: 1,
-                    zIndex: 1,
-                    borderRadius: 1,
-                    color: 'secondary.muted',
-                    gridColumn: '1',
-                    gridRow: '1',
-                    justifySelf: 'flex-start',
-                }}
-            >
-                <RefreshAllFoldersButton />
+
+            {/* Inbox cards */}
+            <Box sx={{ overflow: 'auto', flex: '1 1 auto', p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {inboxes.map((folder) => (
+                    <FolderSelectionProvider key={folder.full_path}>
+                        <InboxCard folder={folder} />
+                    </FolderSelectionProvider>
+                ))}
             </Box>
-        </Box>
+        </PageWrapper>
     );
 }
+
 
 /** Description of the inbox page, shown as modal on click */
 function InfoDescription() {
