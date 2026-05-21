@@ -90,7 +90,7 @@ export function ArtistsTable({
 
     return (
         <TableContainer sx={{ background: 'transparent' }}>
-            <Table size="small" sx={{ minWidth: 0, width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <Table size="small" sx={{ minWidth: 0, width: '100%', borderCollapse: 'collapse', '@media (max-width: 639px)': { tableLayout: 'fixed' } }}>
                 <TableHead>
                     <TableRow>
                         <TableCell padding="checkbox" sx={{ width: 40, border: 'none', pb: 0.5 }}>
@@ -104,7 +104,7 @@ export function ArtistsTable({
                                 }
                             />
                         </TableCell>
-                        <TableCell sx={{ border: 'none', pb: 0.5, width: '100%' }}>
+                        <TableCell sx={{ border: 'none', pb: 0.5, '@media (max-width: 639px)': { width: '100%' } }}>
                             <TableSortLabel
                                 active={sortField === 'artist'}
                                 direction={sortField === 'artist' ? sortOrder : 'asc'}
