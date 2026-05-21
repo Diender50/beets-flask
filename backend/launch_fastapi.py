@@ -11,8 +11,10 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from beets_flask.server_v2.app import create_app
+from beets_flask.server_v2.websocket import wrap_with_socketio
 
-app = create_app()
+# app is the socketio-wrapped ASGI app; FastAPI lives inside it.
+app = wrap_with_socketio(create_app())
 
 if __name__ == "__main__":
     uvicorn.run(

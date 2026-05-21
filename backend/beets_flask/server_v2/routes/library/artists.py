@@ -135,6 +135,10 @@ async def _get_artists(artist_name: str | None, lib) -> Response:
 
     from beets_flask.library_cache import get_missing_count_map
 
+    # Trailing slash in URL causes {artist_name:path} to capture "" — treat as None (all artists).
+    if not artist_name:
+        artist_name = None
+
     cache_key = _artists_cache_key(artist_name)
     cached = get_json_cache(cache_key)
     if cached is not None:

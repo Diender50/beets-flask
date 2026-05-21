@@ -70,8 +70,13 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     from .routes import register_routes
+    from .routes.frontend import register_frontend
 
     register_routes(app)
+
+    # Mount frontend static files last (catch-all; only active when dist dir exists).
+    from beets_flask.config.flask_config import get_flask_config
+    register_frontend(app, get_flask_config()["FRONTEND_DIST_DIR"])
 
     log.debug("FastAPI app created.")
     return app

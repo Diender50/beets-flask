@@ -20,20 +20,20 @@ server/                           server_v2/
 │   ├── config.py                 ├── routes/config.py    ✅ done
 │   ├── art_preview.py            ├── routes/art_preview.py ✅ done
 │   ├── exception.py              ├── (handled in server_v2/exceptions.py — skip)
-│   ├── frontend.py               ├── routes/frontend.py  ⬜ last (StaticFiles)
-│   ├── inbox.py                  ├── routes/inbox.py     ⬜ complex
-│   ├── db_models/                ├── routes/db_models/   ⬜ complex (state CRUD)
-│   ├── discovery/__init__.py     ├── routes/discovery.py ⬜ complex
+│   ├── frontend.py               ├── routes/frontend.py  ✅ done (StaticFiles, prod only)
+│   ├── inbox.py                  ├── routes/inbox.py     ✅ done
+│   ├── db_models/                ├── routes/db_models.py ✅ done (single file, factory pattern)
+│   ├── discovery/__init__.py     ├── routes/discovery.py ✅ done
 │   └── library/
 │       ├── __init__.py           ├── routes/library/
 │       ├── stats.py              │   ├── stats.py        ✅ done
 │       ├── artists.py            │   ├── artists.py      ✅ done
-│       ├── resources.py          │   ├── resources.py    ⬜ complex (decorators)
+│       ├── resources.py          │   ├── resources.py    ✅ done
 │       ├── artwork.py            │   ├── artwork.py      ✅ done
-│       ├── audio.py              │   ├── audio.py        ⬜ (streaming + ffmpeg)
+│       ├── audio.py              │   ├── audio.py        ✅ done
 │       └── metadata.py           │   └── metadata.py     ✅ done
-└── websocket/                    └── (skip for now — stays on Quart :5001)
-    ├── __init__.py
+└── websocket/                    └── websocket/__init__.py ✅ done
+    ├── __init__.py                   (status.py + terminal.py reused as-is via @sio.on)
     ├── status.py
     └── terminal.py
 ```
@@ -204,10 +204,14 @@ def total(self, lib: Library) -> int:
 from beets_flask.server.utility import pop_query_param
 ```
 
-### socketio (WebSocket)
-**Do not migrate yet.** `server/websocket/` stays on Quart :5001.
-When ready: `socketio.ASGIApp(sio, fastapi_app)` wraps the FastAPI ASGI app.
-`sio` uses `AsyncRedisManager` — both apps can share the same Redis channel.
+### socketio (WebSocket) ✅ done
+`wrap_with_socketio(fastapi_app)` in `server_v2/websocket/__init__.py` wraps FastAPI.
+`sio` from `server/websocket/__init__.py` reused directly (AsyncRedisManager → shared Redis).
+`status.py` + `terminal.py` @sio.on handlers registered at import time — no changes needed.
+
+**One remaining debt:** `send_status_update()` in `server/websocket/status.py` line 119
+hardcodes `ws://127.0.0.1:5001` (Quart). Works during parallel phase.
+**Fix when removing Quart:** change to `5002`, or make the port configurable via env var.
 
 ### `@exception_as_return_value` decorator (for RQ workers)
 Lives in `server/exceptions.py` — keep using it in worker code, not in routes.
