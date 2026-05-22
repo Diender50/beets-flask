@@ -1,19 +1,15 @@
-"""Artists endpoint.
-
-Split artists by separators, and do some basic aggregation.
-"""
+"""Artist routes."""
 
 import json
 import re
 import unicodedata
 import urllib.parse
 import urllib.request
-from typing import TYPE_CHECKING
+from urllib.parse import quote, urlparse
 
-from urllib.parse import urlparse
 import musicbrainzngs
 import pandas as pd
-from quart import Blueprint, Response, g, jsonify, request
+from fastapi import APIRouter, HTTPException, Response
 
 from beets_flask.config import get_config
 from beets_flask.library_cache import (
@@ -28,20 +24,8 @@ from beets_flask.library_cache import (
     set_json_cache,
 )
 from beets_flask.logger import log
+from beets_flask.server.dependencies import BeetsLib
 from beets_flask.server.exceptions import NotFoundException
-
-artists_bp = Blueprint("artists", __name__)
-
-if TYPE_CHECKING:
-    # For type hinting the global g object
-    from . import g
-
-# TODOs:
-# Currently artist_sort is completely ignored. Im not even sure what it is supposed to do.
-# Also artistids are not used, but they are in the database.
-
-# Note: I wanted to use polars first but it does not support alpine images yet, so we use pandas instead.
-
 
 ARTIST_SEPARATORS: list[str] = get_config()["gui"]["library"][
     "artist_separators"
@@ -177,7 +161,9 @@ def _extract_valid_mbids(raw: object) -> list[str]:
 
 
 def _resolve_lib(lib=None):
-    return lib or g.lib
+    if lib is None:
+        raise ValueError("lib must be passed explicitly")
+    return lib
 
 
 def _find_artist_mbids(artist_name: str, lib=None) -> set[str]:
@@ -277,10 +263,10 @@ def _normalize_for_dedup(title: str) -> str:
     t = re.sub(r"[‐‑‒–—−﹘﹣－]", "-", t)
 
     # Strip apostrophe/quote variants entirely for dedup robustness:
-    # "t’aime" == "taime" regardless of which Unicode apostrophe the source uses.
+    # "t'aime" == "taime" regardless of which Unicode apostrophe the source uses.
     # \uXXXX escapes are resolved by Python at parse time → encoding-safe.
     t = re.sub(
-        "['`´ʹʻʼʽ‘’‚‛′‵＇]",
+        "['`´ʹʻʼʽ''‚‛′‵＇]",
         "",
         t,
     )
@@ -925,7 +911,7 @@ def get_artists_pandas(
             SELECT
                 albumartist AS artist,
                 added
-                
+
             FROM
                 albums
         """
@@ -1004,56 +990,135 @@ def get_artists_pandas(
 
     return result
 
+router = APIRouter(tags=["library"])
 
-@artists_bp.route("/artists/<path:artist_name>", methods=["GET"])
-@artists_bp.route("/artists", methods=["GET"], defaults={"artist_name": None})
-async def all_artists(artist_name: str | None = None):
-    """Get all artists from the database.
 
-    This endpoint retrieves all artists from the database, splits them by
-    specified separators and aggregates the data to count the number of items.
-    """
+# NOTE: specific routes (with literal path suffixes) registered BEFORE
+# the wildcard {artist_name:path} routes to avoid greedy matching.
+
+
+@router.post("/artists/missing/cache/warm-all")
+async def warm_all_missing_albums_cache(lib: BeetsLib, force: bool = False) -> dict:
+    result = ensure_missing_cache_warmed_for_all_artists(lib=lib, force_recompute=force)
+    return result
+
+
+@router.post("/artists/cache/refresh")
+async def refresh_artists_cache() -> dict:
+    cleared = invalidate_artists_cache()
+    return {"ok": True, "cleared": cleared}
+
+
+@router.get("/missing-album-tracks")
+async def missing_album_tracks(id: str = "") -> list:
+    if not id:
+        raise HTTPException(status_code=400, detail="id is required")
+
+    if id.startswith("deezer:"):
+        deezer_id = id[7:]
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                f"https://api.deezer.com/album/{deezer_id}/tracks", timeout=8
+            ) as req:
+                data = json.loads(req.read())
+            return [
+                {
+                    "title": t.get("title", ""),
+                    "duration": t.get("duration"),
+                    "track_position": t.get("track_position"),
+                }
+                for t in data.get("data", [])
+            ]
+        except Exception:
+            return []
+    else:
+        try:
+            return _best_release_tracks_for_group(id)
+        except Exception:
+            return []
+
+
+@router.get("/artists/{artist_name:path}/missing")
+async def missing_albums_by_artist(artist_name: str, lib: BeetsLib, refresh: bool = False) -> Response:
+    cache_key = _missing_cache_key(artist_name)
+    log.info("missing_albums request artist=%s refresh=%s", artist_name, refresh)
+
+    if not refresh:
+        cached = get_json_cache(cache_key)
+        if cached is not None:
+            cached, changed = _clean_cached_missing_payload(artist_name, cached, lib=lib)
+            if changed:
+                set_json_cache(cache_key, cached, MISSING_CACHE_TTL_SECONDS)
+            set_db_missing_cache(artist_name, cached)
+            log.info("missing_albums redis_hit artist=%s", artist_name)
+            return Response(content=cached, media_type="application/json")
+
+        log.info("missing_albums redis_miss artist=%s", artist_name)
+        db_cached = get_db_missing_cache(artist_name)
+        if db_cached is not None:
+            db_cached, changed = _clean_cached_missing_payload(artist_name, db_cached, lib=lib)
+            log.info("missing_albums db_hit artist=%s", artist_name)
+            set_json_cache(cache_key, db_cached, MISSING_CACHE_TTL_SECONDS)
+            if changed:
+                set_db_missing_cache(artist_name, db_cached)
+            return Response(content=db_cached, media_type="application/json")
+        log.info("missing_albums db_miss artist=%s", artist_name)
+    else:
+        log.info("missing_albums force_refresh artist=%s", artist_name)
+
+    invalidate_artists_list_cache()
+    try:
+        missing = recompute_missing_cache_for_artist(artist_name, lib=lib)
+    except musicbrainzngs.musicbrainz.MusicBrainzError as exc:
+        log.warning("missing_albums musicbrainz_error artist=%s error=%s", artist_name, exc)
+        return Response(content="[]", media_type="application/json")
+
+    payload = pd.DataFrame(missing).to_json(orient="records")
+    log.info("missing_albums computed artist=%s count=%s", artist_name, len(missing))
+    return Response(content=payload, media_type="application/json")
+
+
+@router.get("/artists/{artist_name:path}")
+async def artist_by_name(artist_name: str, lib: BeetsLib) -> Response:
+    return await _get_artists(artist_name, lib)
+
+
+@router.get("/artists")
+async def all_artists(lib: BeetsLib) -> Response:
+    return await _get_artists(None, lib)
+
+
+async def _get_artists(artist_name: str | None, lib) -> Response:
+    import unicodedata
+
+    from beets_flask.library_cache import get_missing_count_map
+
+    # Trailing slash in URL causes {artist_name:path} to capture "" — treat as None (all artists).
+    if not artist_name:
+        artist_name = None
+
     cache_key = _artists_cache_key(artist_name)
     cached = get_json_cache(cache_key)
     if cached is not None:
-        return Response(cached, mimetype="application/json")
+        return Response(content=cached, media_type="application/json")
 
     artists_albums = (
-        get_artists_pandas("albums", artist_name)
-        .rename(
-            columns={
-                "count": "album_count",
-                "last_added": "last_album_added",
-                "first_added": "first_album_added",
-            }
-        )
+        get_artists_pandas("albums", artist_name, lib=lib)
+        .rename(columns={"count": "album_count", "last_added": "last_album_added", "first_added": "first_album_added"})
         .set_index("artist")
     )
     artists_items = (
-        get_artists_pandas("items", artist_name, include_size=True)
-        .rename(
-            columns={
-                "count": "item_count",
-                "last_added": "last_item_added",
-                "first_added": "first_item_added",
-            }
-        )
+        get_artists_pandas("items", artist_name, include_size=True, lib=lib)
+        .rename(columns={"count": "item_count", "last_added": "last_item_added", "first_added": "first_item_added"})
         .set_index("artist")
     )
-    # Join the two DataFrames on artist name and count the number of items and albums
-    artists = artists_albums.join(
-        artists_items,
-        how="outer",
-    ).reset_index()
 
-    # Fill n_albums and n_items with 0 if they are NaN
+    artists = artists_albums.join(artists_items, how="outer").reset_index()
     artists["album_count"] = artists["album_count"].fillna(0).astype(int)
     artists["item_count"] = artists["item_count"].fillna(0).astype(int)
     artists["total_size"] = artists["total_size"].fillna(0).astype(int)
 
-    missing_count_map = _missing_count_by_artist_name()
-    # Normalize both sides to NFC to handle Unicode encoding differences (NFC vs NFD)
-    # between beets library strings and the stored cache keys.
+    missing_count_map = get_missing_count_map()
     artists["missing_count"] = (
         artists["artist"]
         .apply(lambda n: missing_count_map.get(unicodedata.normalize("NFC", str(n)).strip(), 0))
@@ -1063,12 +1128,9 @@ async def all_artists(artist_name: str | None = None):
 
     if artist_name is not None:
         if artists.empty:
-            # Return a stub for followed-only artists (not yet in beets library)
             from beets_flask.discovery.followed_artists import is_followed
 
             if is_followed(artist_name):
-                import json as _json
-
                 stub = {
                     "artist": artist_name,
                     "album_count": 0,
@@ -1077,131 +1139,13 @@ async def all_artists(artist_name: str | None = None):
                     "missing_count": 0,
                     "followed": True,
                 }
-                return Response(_json.dumps(stub), mimetype="application/json")
+                return Response(content=json.dumps(stub), media_type="application/json")
             raise NotFoundException(f"Artist '{artist_name}' not found.")
-        else:
-            payload = artists.iloc[0].to_json()
-            set_json_cache(cache_key, payload, ARTISTS_CACHE_TTL_SECONDS)
-            return Response(payload, mimetype="application/json")
+
+        payload = artists.iloc[0].to_json()
+        set_json_cache(cache_key, payload, ARTISTS_CACHE_TTL_SECONDS)
+        return Response(content=payload, media_type="application/json")
 
     payload = artists.to_json(orient="records")
     set_json_cache(cache_key, payload, ARTISTS_CACHE_TTL_SECONDS)
-    return Response(payload, mimetype="application/json")
-
-
-@artists_bp.route("/artists/<path:artist_name>/missing", methods=["GET"])
-async def missing_albums_by_artist(artist_name: str):
-    """Get missing albums for artist via Beets artist metadata + MusicBrainz.
-
-    Cache hierarchy:
-      1. Redis (fast, 1-hour TTL, lost on reboot)
-      2. SQLite DB (persistent, survives reboot, invalidated on import)
-      3. Computed fresh from MusicBrainz + Deezer
-    """
-    cache_key = _missing_cache_key(artist_name)
-    refresh = request.args.get("refresh", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    log.info(
-        "missing_albums request artist=%s refresh=%s",
-        artist_name,
-        refresh,
-    )
-    if not refresh:
-        # 1. Redis
-        cached = get_json_cache(cache_key)
-        if cached is not None:
-            cached, changed = _clean_cached_missing_payload(artist_name, cached)
-            if changed:
-                set_json_cache(cache_key, cached, MISSING_CACHE_TTL_SECONDS)
-            # Always sync Redis → DB so that _missing_count_by_artist_name() is accurate.
-            set_db_missing_cache(artist_name, cached)
-            log.info("missing_albums redis_hit artist=%s", artist_name)
-            return Response(cached, mimetype="application/json")
-        log.info("missing_albums redis_miss artist=%s", artist_name)
-
-        # 2. DB (persistent across reboots)
-        db_cached = get_db_missing_cache(artist_name)
-        if db_cached is not None:
-            db_cached, changed = _clean_cached_missing_payload(artist_name, db_cached)
-            log.info("missing_albums db_hit artist=%s", artist_name)
-            # Restore Redis so subsequent requests are fast
-            set_json_cache(cache_key, db_cached, MISSING_CACHE_TTL_SECONDS)
-            if changed:
-                set_db_missing_cache(artist_name, db_cached)
-            return Response(db_cached, mimetype="application/json")
-        log.info("missing_albums db_miss artist=%s", artist_name)
-    else:
-        log.info("missing_albums force_refresh artist=%s", artist_name)
-
-    # 3. Compute fresh — clear only the artists-list Redis cache (not missing caches
-    # of other artists) so the updated missing_count is served on the next request.
-    invalidate_artists_list_cache()
-    try:
-        missing = recompute_missing_cache_for_artist(artist_name)
-    except musicbrainzngs.musicbrainz.MusicBrainzError as exc:
-        log.warning(
-            "missing_albums musicbrainz_error artist=%s error=%s",
-            artist_name,
-            exc,
-        )
-        # Do not cache the error — next request will retry instead of serving stale "[]".
-        return Response("[]", mimetype="application/json")
-
-    payload = pd.DataFrame(missing).to_json(orient="records")
-    log.info("missing_albums computed artist=%s count=%s", artist_name, len(missing))
-    return Response(payload, mimetype="application/json")
-
-
-@artists_bp.route("/artists/missing/cache/warm-all", methods=["POST"])
-async def warm_all_missing_albums_cache():
-    """Compute and persist missing-albums cache for every library artist.
-
-    By default only uncached artists are computed. Set ``force=1`` to recompute all.
-    """
-    force = request.args.get("force", "").strip().lower() in {"1", "true", "yes"}
-    result = ensure_missing_cache_warmed_for_all_artists(force_recompute=force)
-    return jsonify(result)
-
-
-@artists_bp.route("/missing-album-tracks", methods=["GET"])
-async def missing_album_tracks():
-    """Get the tracklist for a missing album by Deezer album ID or MB release group ID.
-
-    Query param: id — either "deezer:<album_id>" or a bare MusicBrainz release-group UUID.
-    """
-    release_id = request.args.get("id", "").strip()
-    if not release_id:
-        return jsonify({"error": "id is required"}), 400
-
-    if release_id.startswith("deezer:"):
-        deezer_id = release_id[7:]
-        try:
-            tracks_url = f"https://api.deezer.com/album/{deezer_id}/tracks"
-            with urllib.request.urlopen(tracks_url, timeout=8) as req:  # noqa: S310
-                data = json.loads(req.read())
-            tracks = [
-                {
-                    "title": t.get("title", ""),
-                    "duration": t.get("duration"),
-                    "track_position": t.get("track_position"),
-                }
-                for t in data.get("data", [])
-            ]
-            return jsonify(tracks)
-        except Exception:
-            return jsonify([])
-    else:
-        # MusicBrainz release group UUID
-        try:
-            return jsonify(_best_release_tracks_for_group(release_id))
-        except Exception:
-            return jsonify([])
-
-
-@artists_bp.route("/artists/cache/refresh", methods=["POST"])
-async def refresh_artists_cache():
-    cleared = invalidate_artists_cache()
-    return jsonify({"ok": True, "cleared": cleared})
+    return Response(content=payload, media_type="application/json")

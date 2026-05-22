@@ -16,18 +16,24 @@ on:
     workflow_dispatch:
 
 jobs:
-    docker:
+    # ── Step 1: compute tags once, share across platform jobs ────────────────
+    meta:
         runs-on: ubuntu-latest
+        outputs:
+            tags: ${{ steps.meta.outputs.tags }}
+            labels: ${{ steps.meta.outputs.labels }}
+            version: ${{ steps.meta.outputs.version }}
+            json: ${{ steps.meta.outputs.json }}
         steps:
+            - name: Lowercase image name
+              run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
             - name: Docker meta
               id: meta
               uses: docker/metadata-action@v5
-              # generate Docker tags based on the following events/attributes
               with:
-                  # list of Docker images to use as base name for tags
                   images: |
-                      ghcr.io/${{ github.repository }}
-                  # generate Docker tags based on the following events/attributes
+                      ${{ env.IMAGE }}
                   tags: |
                       type=ref,event=branch
                       type=ref,event=tag
@@ -38,6 +44,18 @@ jobs:
                       type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
                       type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
+    # ── Step 2: build each platform in parallel ───────────────────────────────
+    build:
+        needs: meta
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                platform:
+                    - linux/amd64
+                    - linux/arm64
+
+        steps:
             - name: Checkout
               uses: actions/checkout@v4
 
@@ -54,15 +72,75 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push
+            - name: Lowercase image name + platform slug
+              id: slug
+              run: |
+                  echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+                  echo "slug=$(echo ${{ matrix.platform }} | tr '/' '-')" >> $GITHUB_OUTPUT
+
+            - name: Build and push by digest
+              id: build
               uses: docker/build-push-action@v6
               with:
                   file: ./docker/Dockerfile
-                  platforms: linux/amd64,linux/arm64
+                  platforms: ${{ matrix.platform }}
                   target: prod
                   context: .
-                  push: ${{ github.event_name != 'pull_request' }}
-                  tags: ${{ steps.meta.outputs.tags }}
-                  labels: ${{ steps.meta.outputs.labels }}
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+                  push: true
+                  # Push as digest-only (no tag yet) — merged in the next job.
+                  outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+                  labels: ${{ needs.meta.outputs.labels }}
+                  provenance: false
+                  cache-from: |
+                      type=gha,scope=${{ steps.slug.outputs.slug }}
+                      type=registry,ref=${{ env.IMAGE }}:dev
+                  cache-to: type=gha,mode=max,scope=${{ steps.slug.outputs.slug }}
+
+            - name: Export digest
+              run: |
+                  mkdir -p /tmp/digests
+                  digest="${{ steps.build.outputs.digest }}"
+                  touch "/tmp/digests/${digest#sha256:}"
+
+            - name: Upload digest artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: digest-${{ steps.slug.outputs.slug }}
+                  path: /tmp/digests/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    # ── Step 3: merge digests into a multi-arch manifest and tag ─────────────
+    merge:
+        needs: [meta, build]
+        runs-on: ubuntu-latest
+        if: ${{ github.event_name != 'pull_request' }}
+        steps:
+            - name: Download digests
+              uses: actions/download-artifact@v4
+              with:
+                  path: /tmp/digests
+                  pattern: digest-*
+                  merge-multiple: true
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Lowercase image name
+              run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+            - name: Create and push multi-arch manifest
+              working-directory: /tmp/digests
+              env:
+                  DOCKER_METADATA_OUTPUT_JSON: ${{ needs.meta.outputs.json }}
+              run: |
+                  docker buildx imagetools create \
+                    $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+                    $(printf '${{ env.IMAGE }}@sha256:%s ' *)

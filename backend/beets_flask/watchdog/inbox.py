@@ -18,7 +18,7 @@ from beets_flask.disk import (
 from beets_flask.invoker import enqueue
 from beets_flask.logger import log
 from beets_flask.server.websocket.status import FileSystemUpdate, send_status_update
-from beets_flask.watchdog.eventhandler import AIOEventHandler, AIOWatchdog
+from beets_flask.watchdog.eventhandler import AIOEventHandler, AIOWatchdog, EVENT_TYPE_DELETED
 
 # ------------------------------------------------------------------------------------ #
 #                                   init and watchdog                                  #
@@ -116,6 +116,10 @@ class InboxHandler(AIOEventHandler):
 
         # trigger cache clear and gui update of inbox directories
         status_update = asyncio.create_task(send_status_update(FileSystemUpdate()))
+
+        if event.event_type in (EVENT_TYPE_DELETED,):
+            await status_update
+            return
 
         try:
             log.debug(f"File change at {fullpath}")

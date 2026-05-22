@@ -32,7 +32,9 @@ def get_beets_lib() -> Generator[Library, None, None]:
     try:
         yield lib
     finally:
-        lib.close()
+        close = getattr(lib, "close", None)
+        if callable(close):
+            close()
 
 
 # Convenience type aliases for route signatures:

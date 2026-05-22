@@ -1,11 +1,7 @@
-"""Server configuration for flask app.
+"""Server configuration for the FastAPI application.
 
-We have different configurations classes for
-different environments further you may create
-a custom configuration class for your own needs.
-
-The configuration classes are parse in the `create_app`
-function in the `__init__.py` file.
+Different configuration classes for different environments.
+Configuration classes are used in `server/app.py`'s `create_app` factory.
 """
 
 from __future__ import annotations
@@ -109,7 +105,7 @@ def init_server_config(input_config: str | ServerConfig | None = None) -> Server
 # if "RQ_WORKER_ID" in os.environ:
 # not elegant, but we also need to initalize the config in workers,
 # where the app init is not called
-# and for some reason it is needed in global space. revisit this in quartz port
+# and for some reason it is needed in global space.
 
 
 config: ServerConfig | None = None

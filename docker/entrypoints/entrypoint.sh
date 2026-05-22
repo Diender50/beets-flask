@@ -33,11 +33,14 @@ python ./launch_watchdog_worker.py &
 
 redis-cli FLUSHALL >/dev/null 2>&1
 
-# we need to run with one worker for socketio to work
-uvicorn beets_flask.server.app:create_app --port 5001 \
+export IB_SERVER_CONFIG=prod
+
+# Use uvicorn directly (no --reload) for production.
+# socketio with AsyncRedisManager works with multiple workers via Redis pub/sub,
+# but 1 worker is safer to avoid any in-process state issues.
+uvicorn launch_fastapi:app \
     --host 0.0.0.0 \
-    --factory \
-    --workers 4 \
-    --use-colors \
+    --port 5002 \
+    --workers 1 \
     --log-level info \
     --no-access-log

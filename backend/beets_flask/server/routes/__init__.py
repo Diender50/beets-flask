@@ -1,35 +1,48 @@
-from quart import Blueprint, Quart
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from .art_preview import art_blueprint
-from .config import config_bp
-from .db_models import register_state_models
-from .discovery import discovery_bp
-from .exception import error_bp
-from .frontend import frontend_bp
-from .inbox import inbox_bp
-from .library import library_bp
-from .monitor import monitor_bp
-
-backend_bp = Blueprint("backend", __name__, url_prefix="/api_v1")
-
-# Register all backend blueprints
-backend_bp.register_blueprint(art_blueprint)
-backend_bp.register_blueprint(config_bp)
-backend_bp.register_blueprint(discovery_bp)
-backend_bp.register_blueprint(error_bp)
-backend_bp.register_blueprint(frontend_bp)
-backend_bp.register_blueprint(inbox_bp)
-backend_bp.register_blueprint(library_bp)
-backend_bp.register_blueprint(monitor_bp)
+_API_PREFIX = "/api_v1"
 
 
-def register_routes(app: Quart):
-    # Register database state models
-    # to api blueprint i.e. /api_v1/session, /api_v1/task & /api_v1/candidate
-    register_state_models(backend_bp)
+def register_routes(app: FastAPI) -> None:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-    app.register_blueprint(backend_bp)
-    app.register_blueprint(frontend_bp)
+    from .art_preview import router as art_router
+    from .config import router as config_router
+    from .db_models import candidate_router, folder_router, session_router, task_router
+    from .discovery import router as discovery_router
+    from .inbox import router as inbox_router
+    from .library.artists import router as artists_router
+    from .library.artwork import router as artwork_router
+    from .library.audio import router as audio_router
+    from .library.metadata import router as metadata_router
+    from .library.resources import router as resources_router
+    from .library.stats import router as stats_router
+    from .monitor import router as monitor_router
 
+    app.include_router(monitor_router, prefix=_API_PREFIX)
+    app.include_router(config_router, prefix=_API_PREFIX)
+    app.include_router(art_router, prefix=_API_PREFIX)
+    app.include_router(inbox_router, prefix=_API_PREFIX)
+    app.include_router(discovery_router, prefix=_API_PREFIX)
 
-__all__ = ["register_routes"]
+    # DB model state CRUD
+    app.include_router(session_router, prefix=_API_PREFIX)
+    app.include_router(folder_router, prefix=_API_PREFIX)
+    app.include_router(task_router, prefix=_API_PREFIX)
+    app.include_router(candidate_router, prefix=_API_PREFIX)
+
+    lib_prefix = _API_PREFIX + "/library"
+    app.include_router(stats_router, prefix=lib_prefix)
+    app.include_router(metadata_router, prefix=lib_prefix)
+    app.include_router(artwork_router, prefix=lib_prefix)
+    app.include_router(audio_router, prefix=lib_prefix)
+    # resources before artists — both have {id:path} style routes
+    app.include_router(resources_router, prefix=lib_prefix)
+    # artists last — wildcard {artist_name:path} routes must be registered after specifics
+    app.include_router(artists_router, prefix=lib_prefix)

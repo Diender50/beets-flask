@@ -1,23 +1,13 @@
-import traceback
-from collections.abc import Awaitable, Callable
-from functools import wraps
-from typing import NotRequired, ParamSpec, TypedDict, TypeVar
+from __future__ import annotations
 
-from beets_flask.logger import log
+import traceback
+from typing import NotRequired, TypedDict
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 
 class SerializedException(TypedDict):
-    """Serialized exception format.
-
-    This is used to serialize exceptions to a common format.
-    The format is as follows:
-    {
-        "type": "Exception type",
-        "message": "Error message",
-        "description": "Error description (optional)"
-    }
-    """
-
     type: str
     message: str
     description: NotRequired[str | None]
@@ -25,18 +15,10 @@ class SerializedException(TypedDict):
 
 
 class ApiException(Exception):
-    """Base class for all API errors."""
-
     persist_in_db: bool
-    """If true, the exception will be stored in the database on
-    raise in sessions.
-    TODO: Think about exception hierarchy.
-    """
     status_code: int = 500
 
-    def __init__(
-        self, *args, status_code: int | None = None, persist_in_db: bool = True
-    ):
+    def __init__(self, *args, status_code: int | None = None, persist_in_db: bool = True):
         super().__init__(*args)
         if status_code is not None:
             self.status_code = status_code
@@ -44,84 +26,40 @@ class ApiException(Exception):
 
 
 class InvalidUsageException(ApiException):
-    """Invalid usage of the API.
-
-    This is used to indicate that the API was used incorrectly.
-    """
-
     status_code: int = 400
 
 
 class NotFoundException(ApiException):
-    """Resource not found.
-
-    This is used to indicate that the requested resource was not found.
-    """
-
     status_code: int = 404
 
 
 class IntegrityException(ApiException):
-    """Integrity error.
-
-    This is used to indicate that the requested resource was not found.
-    """
-
     status_code: int = 409
 
 
 class NotImportedException(ApiException):
-    """Not imported error.
-
-    So far only used for the auto import session, when the best
-    match is worse than the threshold.
-    """
-
     status_code: int = 409
 
 
 class NoCandidatesFoundException(ApiException):
-    """No candidates found error.
-
-    Raised when an online search does not return any candidates.
-    Could be raised from automatic search (without searchid) but also when manually
-    adding more candidates via interactive search (searchid given).
-    """
-
     status_code: int = 409
 
-    def __init__(
-        self, *args, status_code: int | None = None, persist_in_db: bool = True
-    ):
+    def __init__(self, *args, status_code: int | None = None, persist_in_db: bool = True):
         if not args:
-            error_text = "Lookup found no candidates. " + self.metadata_plugin_info()
-            args = (error_text,)
-
+            try:
+                from beets.metadata_plugins import find_metadata_source_plugins
+                meta_plugins = [p.data_source for p in find_metadata_source_plugins()]
+                msg = (
+                    f"Lookup found no candidates. Used '{', '.join(meta_plugins)}'."
+                    if meta_plugins else "Lookup found no candidates. No source plugins enabled."
+                )
+            except Exception:
+                msg = "Lookup found no candidates."
+            args = (msg,)
         super().__init__(*args, status_code=status_code, persist_in_db=persist_in_db)
-
-    @classmethod
-    def metadata_plugin_info(cls) -> str:
-        # Get enabled metadata source plugins to give a better error message
-        error_text = ""
-        try:
-            from beets.metadata_plugins import find_metadata_source_plugins
-
-            meta_plugins: list[str] = [
-                p.data_source for p in find_metadata_source_plugins()
-            ]
-            if len(meta_plugins) > 0:
-                error_text += f"Used '{', '.join(meta_plugins)}' as metadata source(s)."
-            else:
-                error_text += "No source plugins are enabled."
-
-        except:
-            error_text += "Could not determine enabled metadata source plugins."
-        return error_text
 
 
 class UserException(Exception):
-    """Base class for errors caused by user input or config."""
-
     status_code: int = 422
 
     def __init__(self, *args, status_code: int | None = None):
@@ -131,39 +69,15 @@ class UserException(Exception):
 
 
 class DuplicateException(UserException):
-    """Duplicate error.
-
-    Raised when we have trouble resolving duplicates in the beets library.
-    Users should check their config and api usage.
-    """
-
     status_code: int = 422
 
 
-def to_serialized_exception(
-    exception: Exception,
-) -> SerializedException:
-    """Convert an exception to a serialized format.
-
-    Parameters
-    ----------
-    exception : Exception | None
-        The exception to serialize.
-
-    Returns
-    -------
-    SerializedException
-        The serialized exception.
-    """
-
+def to_serialized_exception(exception: Exception) -> SerializedException:
     if exception is None:
         return None
-
     tb: str | None = None
-
     if exception.__traceback__ is not None:
         tb = "".join(traceback.format_tb(exception.__traceback__))
-
     return SerializedException(
         type=exception.__class__.__name__,
         message=str(exception),
@@ -172,41 +86,34 @@ def to_serialized_exception(
     )
 
 
-P = ParamSpec("P")  # Parameters
-R = TypeVar("R")  # Return
-
-
-def exception_as_return_value(
-    f: Callable[P, Awaitable[R]],
-) -> Callable[P, Awaitable[R | SerializedException]]:
-    """Decorator to catch exceptions and return them as a values.
-
-    This is used to catch exceptions in the redis worker and return them
-    as a values we can use in the frontend. Sadly standard exeption handling
-    in rq is lacking!
-    """
+def exception_as_return_value(f):
+    from functools import wraps
 
     @wraps(f)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R | SerializedException:
+    async def wrapper(*args, **kwargs):
         try:
             return await f(*args, **kwargs)
-        # Some exceptions are not serializable, so we need to convert them to a
-        # serialized format. E.g. OSErrors
         except ApiException as e:
+            from beets_flask.logger import log
             log.info(e)
             return to_serialized_exception(e)
         except Exception as e:
+            from beets_flask.logger import log
             log.exception(e)
             return to_serialized_exception(e)
 
     return wrapper
 
 
-__all__ = [
-    "SerializedException",
-    "ApiException",
-    "InvalidUsageException",
-    "NotFoundException",
-    "IntegrityException",
-    "to_serialized_exception",
-]
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ApiException)
+    async def _api(request: Request, exc: ApiException) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=to_serialized_exception(exc))
+
+    @app.exception_handler(UserException)
+    async def _user(request: Request, exc: UserException) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=to_serialized_exception(exc))
+
+    @app.exception_handler(Exception)
+    async def _generic(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=500, content=to_serialized_exception(exc))

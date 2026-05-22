@@ -1,380 +1,41 @@
-"""Set update and delete methods for the beets library models.
+"""Library resource CRUD.
 
-Adapted from the official beets web interface
+The original uses a @resource/@resource_query decorator that dispatches on request.method.
+FastAPI version: split into explicit GET / DELETE / PATCH endpoints.
+PaginatedQuery.total() receives lib explicitly (removes g.lib dependency).
 """
 
 from __future__ import annotations
 
 import base64
 import datetime
+import json
 import os
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import wraps
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
     NotRequired,
-    ParamSpec,
     TypedDict,
     TypeVar,
     cast,
 )
 
 from beets import util as beets_util
-from beets.dbcore import Model, Query, Results
+from beets.dbcore import Model, Query
 from beets.dbcore.query import Sort
 from beets.library import Album, Item, Library, parse_query_string
-from quart import Blueprint, Response, abort, g, json, jsonify, request
+from fastapi import APIRouter
 
 from beets_flask.config import get_config
 from beets_flask.logger import log
-from beets_flask.server.exceptions import NotFoundException
-from beets_flask.server.routes.exception import InvalidUsageException
+from beets_flask.server.exceptions import InvalidUsageException, NotFoundException
 from beets_flask.server.utility import pop_query_param
-
-if TYPE_CHECKING:
-    # For type hinting the global g object
-    from . import g
-
-
-resource_bp = Blueprint("resource", __name__)
+from beets_flask.server.dependencies import BeetsLib
 
 
 T = TypeVar("T", bound=Item | Album)
-
-
-def delete_files():
-    """Return whether the current delete request should remove the selected files."""
-    return request.args.get("delete") is not None
-
-
-def expanded_response():
-    """Check if request is for an expanded response.
-
-    Return whether the current request is for an expanded response.
-    """
-    return request.args.get("expand") is not None
-
-
-def minimal_response():
-    """Check if request is for a minimal response.
-
-    Normal requests contain full info, minimal ones only have item ids and names.
-    """
-    return request.args.get("minimal") is not None
-
-
-def resource_query(
-    type: type[T], patchable: bool = False
-) -> Callable[..., Callable[[str], Awaitable[Response]]]:
-    """Decorate a function to handle RESTful HTTP queries for resources."""
-
-    def make_response(
-        query_func: Callable[[str], Awaitable[Results[T]]],
-    ) -> Callable[[str], Awaitable[Response]]:
-        @wraps(query_func)
-        async def wrapper(query: str) -> Response:
-            # we set the route to use a path converter before us,
-            # so queries is a single string.
-            # edgecase: trailing escape character `\` would crash. we should
-            # also avoid this in the frontend.
-            if query.endswith("\\") and (len(query) - len(query.rstrip("\\"))) % 2 == 1:
-                # only remove the last character if it is a single escape character
-                query = query[:-1]
-
-            entities: Sequence[T] = [e for e in await query_func(query)]
-
-            method = request.method
-
-            if method == "DELETE":
-                delete_entities(entities, delete_files())
-                return jsonify({"deleted": True})
-            elif method == "PATCH" and patchable:
-                entities = update_entities(entities, await request.get_json())
-            elif method == "GET":
-                pass
-            else:
-                return abort(405)
-
-            # Return the entities
-            return jsonify(
-                [
-                    _rep(
-                        entity,
-                        expand=expanded_response(),
-                        minimal=minimal_response(),
-                    )
-                    for entity in entities
-                ]
-            )
-
-        return wrapper
-
-    return make_response
-
-
-P = ParamSpec("P")
-
-
-def resource(
-    type: type[T], patchable: bool = False
-) -> Callable[..., Callable[P, Awaitable[Response]]]:
-    """Decorate a function to handle RESTful HTTP requests for resources."""
-
-    def make_response(
-        get_func: Callable[P, Awaitable[T]],
-    ) -> Callable[P, Awaitable[Response]]:
-        @wraps(get_func)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Response:
-            entity = await get_func(*args, **kwargs)
-
-            method = request.method
-
-            if method == "DELETE":
-                delete_entities([entity], delete_files())
-                return jsonify({"deleted": True})
-            elif method == "PATCH":
-                entity = update_entities([entity], await request.get_json())[0]
-            elif method == "GET":
-                pass
-            else:
-                return abort(405)
-
-            # Return the entity
-            return jsonify(
-                _rep(
-                    entity,
-                    expand=expanded_response(),
-                    minimal=minimal_response(),
-                )
-            )
-
-        return wrapper
-
-    return make_response
-
-
-# ---------------------------------- Albums ---------------------------------- #
-
-
-@resource_bp.route("/album/<int:id>", methods=["GET", "DELETE", "PATCH"])
-@resource(Album, patchable=False)
-async def album(id: int):
-    item = g.lib.get_album(id)
-    if not item:
-        raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
-    return item
-
-
-@resource_bp.route("/album/bf_id/<string:bf_id>", methods=["GET"])
-@resource(Album, patchable=False)
-async def album_by_bf_id(bf_id: str):
-    """Get album by beets flask import id.
-
-    Only works if album was imported with beets flask.
-    """
-    albums = g.lib.albums(f"gui_import_id:{bf_id}")
-    if len(albums) == 0:
-        raise NotFoundException(
-            f"Album with gui_import_id:'{bf_id}' not found in beets db."
-        )
-
-    if len(albums) > 1:
-        log.warning(
-            f"Multiple albums with gui_import_id:'{bf_id}' found in beets db. "
-            f"Returning first one."
-        )
-    album = albums[0]
-    return album
-
-
-@resource_bp.route("/albums", methods=["GET"], defaults={"query": ""})
-@resource_bp.route("/albums/<path:query>", methods=["GET"])
-async def all_albums(query: str = ""):
-    """Get all albums in the library.
-
-    If a query is provided, it will be used to filter the albums.
-    """
-    log.debug(f"Album query: {query}")
-    params = dict(request.args)
-
-    cursor = pop_query_param(params, "cursor", Cursor.from_string, None)
-
-    if cursor is None:
-        order_by_column = pop_query_param(params, "order_by", str, "added")
-        order_by_direction = pop_query_param(params, "order_dir", str, "DESC")
-        cursor = Cursor(
-            order_by_column=order_by_column,
-            order_by_direction=order_by_direction,
-            last_order_by_value=None,
-            last_id=None,
-        )
-
-    n_items = pop_query_param(
-        params,
-        "n_items",
-        int,
-        50,  # Default number of items per page
-    )
-
-    if len(params) > 0:
-        raise InvalidUsageException(
-            "Unexpected query parameters: , ".join(params.keys())
-        )
-
-    sub_query = parse_query_string(query, Album)
-
-    paginated_query = PaginatedQuery(
-        cursor=cursor,
-        sub_query=sub_query,
-        n_items=n_items,
-    )
-    albums = list(g.lib.albums(paginated_query, paginated_query))
-
-    # Update cursor
-    next_url: str | None = None
-
-    total = paginated_query.total(g.lib)
-    if len(albums) == n_items and len(albums) > 0:
-        last_album = albums[-1]
-
-        cursor.last_order_by_value = str(
-            getattr(last_album, cursor.order_by_column, None)
-        )
-        cursor.last_id = str(last_album.id)
-        next_url = f"{request.path}?cursor={cursor.to_string()}&n_items={n_items}"
-
-    return jsonify(
-        {
-            "albums": [_rep(album, expand=False, minimal=True) for album in albums],
-            "next": next_url,
-            "total": total,
-        }
-    )
-
-
-# Artists are handled slightly differently, as they are not a beets model but can be
-# derived from the items.
-@resource_bp.route("/artist/<path:artist_name>/albums", methods=["GET"])
-async def albums_by_artist(artist_name: str):
-    """Get all items for a specific artist."""
-    log.debug(f"Album query for artist '{artist_name}'")
-
-    with g.lib.transaction() as tx:
-        rows = tx.query(
-            f"SELECT id FROM albums WHERE instr(albumartist, ?) > 0",
-            (artist_name,),
-        )
-
-    expanded = expanded_response()
-    minimal = minimal_response()
-
-    return jsonify(
-        [
-            _rep(g.lib.get_album(row[0]), expand=expanded, minimal=minimal)
-            for row in rows
-        ]
-    )
-
-
-# ----------------------------------- Items ---------------------------------- #
-
-
-@resource_bp.route("/item/<int:id>", methods=["GET", "DELETE", "PATCH"])
-@resource(Item, patchable=True)
-async def item(id: int):
-    item = g.lib.get_item(id)
-    if not item:
-        raise NotFoundException(f"Item with beets_id:'{id}' not found in beets db.")
-
-    return item
-
-
-@resource_bp.route("/items", methods=["GET"], defaults={"query": ""})
-@resource_bp.route("/items/<path:query>", methods=["GET"])
-async def all_items(query: str = ""):
-    """Get all items in the library.
-
-    If a query is provided, it will be used to filter the items.
-    """
-    log.debug(f"Item query: {query}")
-    params = dict(request.args)
-    cursor = pop_query_param(params, "cursor", Cursor.from_string, None)
-    if cursor is None:
-        order_by_column = pop_query_param(params, "order_by", str, "added")
-        order_by_direction = pop_query_param(params, "order_dir", str, "DESC")
-        cursor = Cursor(
-            order_by_column=order_by_column,
-            order_by_direction=order_by_direction,
-            last_order_by_value=None,
-            last_id=None,
-        )
-
-    n_items = pop_query_param(
-        params,
-        "n_items",
-        int,
-        50,  # Default number of items per page
-    )
-
-    if len(params) > 0:
-        raise InvalidUsageException(
-            "Unexpected query parameters: , ".join(params.keys())
-        )
-
-    sub_query = parse_query_string(query, Item)
-
-    paginated_query = PaginatedQuery(
-        cursor=cursor,
-        sub_query=sub_query,
-        n_items=n_items,
-        table="items",
-    )
-    items = list(g.lib.items(paginated_query, paginated_query))
-
-    # Update cursor
-    next_url: str | None = None
-
-    total = paginated_query.total(g.lib)
-    if len(items) == n_items and len(items) > 0:
-        last_item = items[-1]
-
-        cursor.last_order_by_value = str(
-            getattr(last_item, cursor.order_by_column, None)
-        )
-        cursor.last_id = str(last_item.id)
-        next_url = f"{request.path}?cursor={cursor.to_string()}&n_items={n_items}"
-
-    return jsonify(
-        {
-            "items": [_rep(item, expand=False, minimal=True) for item in items],
-            "next": next_url,
-            "total": total,
-        }
-    )
-
-
-# Items by artist are handled slightly differently, as they are not a beets model but can be
-# derived from the items.
-@resource_bp.route("/artist/<path:artist_name>/items", methods=["GET"])
-async def items_by_artist(artist_name: str):
-    """Get all items for a specific artist."""
-    log.debug(f"Item query for artist '{artist_name}'")
-
-    with g.lib.transaction() as tx:
-        rows = tx.query(
-            f"SELECT id FROM items WHERE instr(artist, ?) > 0",
-            (artist_name,),
-        )
-
-    expanded = expanded_response()
-    minimal = minimal_response()
-
-    return jsonify(
-        [_rep(g.lib.get_item(row[0]), expand=expanded, minimal=minimal) for row in rows]
-    )
 
 
 # ----------------------------------- Util ----------------------------------- #
@@ -940,3 +601,171 @@ def __normalize_id_key(prefix: str, id: str):
     Also removes the prefix.
     """
     return id.replace("id", "_id").replace(prefix + "_", "")
+
+router = APIRouter(tags=["library"])
+
+
+# ──────────────────────────────────────────────────────────────
+# Albums
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/album/{id}")
+async def get_album(id: int, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> dict:
+    item = lib.get_album(id)
+    if not item:
+        raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
+    return _rep(item, expand=expand is not None, minimal=minimal is not None)
+
+
+@router.delete("/album/{id}")
+async def delete_album(id: int, lib: BeetsLib, delete: str | None = None) -> dict:
+    item = lib.get_album(id)
+    if not item:
+        raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
+    delete_entities([item], delete is not None)
+    return {"deleted": True}
+
+
+@router.patch("/album/{id}")
+async def patch_album(id: int, lib: BeetsLib, body: dict[str, Any]) -> dict:
+    item = lib.get_album(id)
+    if not item:
+        raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
+    item = update_entities([item], body)[0]
+    return _rep(item)
+
+
+@router.get("/album/bf_id/{bf_id}")
+async def album_by_bf_id(bf_id: str, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> dict:
+    albums = lib.albums(f"gui_import_id:{bf_id}")
+    if len(albums) == 0:
+        raise NotFoundException(f"Album with gui_import_id:'{bf_id}' not found in beets db.")
+    if len(albums) > 1:
+        log.warning(f"Multiple albums with gui_import_id:'{bf_id}'. Returning first.")
+    return _rep(albums[0], expand=expand is not None, minimal=minimal is not None)
+
+
+@router.get("/albums")
+@router.get("/albums/{query:path}")
+async def all_albums(
+    lib: BeetsLib,
+    query: str = "",
+    cursor: str | None = None,
+    order_by: str = "added",
+    order_dir: str = "DESC",
+    n_items: int = 50,
+) -> dict:
+    if cursor is not None:
+        cur = Cursor.from_string(cursor)
+    else:
+        cur = Cursor(order_by_column=order_by, order_by_direction=order_dir, last_order_by_value=None, last_id=None)
+
+    sub_query = parse_query_string(query, Album)
+    paginated = PaginatedQuery(cursor=cur, sub_query=sub_query, n_items=n_items)
+    albums = list(lib.albums(paginated, paginated))
+
+    next_url: str | None = None
+    total = _total_with_lib(paginated, lib, "albums")
+    if len(albums) == n_items and albums:
+        last = albums[-1]
+        cur.last_order_by_value = str(getattr(last, cur.order_by_column, None))
+        cur.last_id = str(last.id)
+        next_url = f"/api_v1/library/albums/{query}?cursor={cur.to_string()}&n_items={n_items}"
+
+    return {
+        "albums": [_rep(a, expand=False, minimal=True) for a in albums],
+        "next": next_url,
+        "total": total,
+    }
+
+
+@router.get("/artist/{artist_name:path}/albums")
+async def albums_by_artist(artist_name: str, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> list:
+    with lib.transaction() as tx:
+        rows = tx.query("SELECT id FROM albums WHERE instr(albumartist, ?) > 0", (artist_name,))
+    return [_rep(lib.get_album(row[0]), expand=expand is not None, minimal=minimal is not None) for row in rows]
+
+
+# ──────────────────────────────────────────────────────────────
+# Items
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/item/{id}")
+async def get_item(id: int, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> dict:
+    item = lib.get_item(id)
+    if not item:
+        raise NotFoundException(f"Item with beets_id:'{id}' not found in beets db.")
+    return _rep(item, minimal=minimal is not None)
+
+
+@router.delete("/item/{id}")
+async def delete_item(id: int, lib: BeetsLib, delete: str | None = None) -> dict:
+    item = lib.get_item(id)
+    if not item:
+        raise NotFoundException(f"Item with beets_id:'{id}' not found in beets db.")
+    delete_entities([item], delete is not None)
+    return {"deleted": True}
+
+
+@router.patch("/item/{id}")
+async def patch_item(id: int, lib: BeetsLib, body: dict[str, Any]) -> dict:
+    item = lib.get_item(id)
+    if not item:
+        raise NotFoundException(f"Item with beets_id:'{id}' not found in beets db.")
+    item = update_entities([item], body)[0]
+    return _rep(item)
+
+
+@router.get("/items")
+@router.get("/items/{query:path}")
+async def all_items(
+    lib: BeetsLib,
+    query: str = "",
+    cursor: str | None = None,
+    order_by: str = "added",
+    order_dir: str = "DESC",
+    n_items: int = 50,
+) -> dict:
+    if cursor is not None:
+        cur = Cursor.from_string(cursor)
+    else:
+        cur = Cursor(order_by_column=order_by, order_by_direction=order_dir, last_order_by_value=None, last_id=None)
+
+    sub_query = parse_query_string(query, Item)
+    paginated = PaginatedQuery(cursor=cur, sub_query=sub_query, n_items=n_items, table="items")
+    items = list(lib.items(paginated, paginated))
+
+    next_url: str | None = None
+    total = _total_with_lib(paginated, lib, "items")
+    if len(items) == n_items and items:
+        last = items[-1]
+        cur.last_order_by_value = str(getattr(last, cur.order_by_column, None))
+        cur.last_id = str(last.id)
+        next_url = f"/api_v1/library/items/{query}?cursor={cur.to_string()}&n_items={n_items}"
+
+    return {
+        "items": [_rep(i, expand=False, minimal=True) for i in items],
+        "next": next_url,
+        "total": total,
+    }
+
+
+@router.get("/artist/{artist_name:path}/items")
+async def items_by_artist(artist_name: str, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> list:
+    with lib.transaction() as tx:
+        rows = tx.query("SELECT id FROM items WHERE instr(artist, ?) > 0", (artist_name,))
+    return [_rep(lib.get_item(row[0]), expand=expand is not None, minimal=minimal is not None) for row in rows]
+
+
+# ──────────────────────────────────────────────────────────────
+# Helper — PaginatedQuery.total() without g.lib
+# ──────────────────────────────────────────────────────────────
+
+def _total_with_lib(paginated: PaginatedQuery, lib: Library, table: str) -> int:
+    if paginated._sub_query:
+        cs, vs = paginated._sub_query[0].clause()
+    else:
+        cs, vs = "1=1", ()
+
+    with lib.transaction() as tx:
+        return tx.query(f"SELECT COUNT(*) FROM {table} WHERE {cs}", vs)[0][0]
