@@ -23,6 +23,7 @@ def register_routes(app: FastAPI) -> None:
     from .library.metadata import router as metadata_router
     from .library.resources import router as resources_router
     from .library.stats import router as stats_router
+    from .library.tags import router as tags_router
     from .monitor import router as monitor_router
 
     app.include_router(monitor_router, prefix=_API_PREFIX)
@@ -44,5 +45,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(audio_router, prefix=lib_prefix)
     # resources before artists — both have {id:path} style routes
     app.include_router(resources_router, prefix=lib_prefix)
+    app.include_router(tags_router, prefix=lib_prefix)
     # artists last — wildcard {artist_name:path} routes must be registered after specifics
     app.include_router(artists_router, prefix=lib_prefix)

@@ -388,6 +388,39 @@ export const missingAlbumsByArtistQueryOptions = (
         fetchMissingAlbumsByArtist(name, forceRefresh),
 });
 
+// ── Tag editing ──────────────────────────────────────────────────────────────
+
+export interface AlbumTagsPayload {
+    album?: string;
+    albumartist?: string;
+    year?: number;
+    genre?: string;
+    label?: string;
+    tracks?: { id: number; name?: string; artist?: string; track?: number }[];
+}
+
+export async function updateAlbumTags(
+    albumId: number,
+    payload: AlbumTagsPayload
+): Promise<{ ok: boolean; album_id: number; moved: boolean }> {
+    const response = await fetch(`/library/album/${albumId}/tags`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        const err = (await response.json().catch(() => ({}))) as {
+            detail?: string;
+        };
+        throw new Error(err.detail ?? `PATCH tags failed (${response.status})`);
+    }
+    return response.json() as Promise<{
+        ok: boolean;
+        album_id: number;
+        moved: boolean;
+    }>;
+}
+
 // Tracklist for a missing album (by Deezer ID or MusicBrainz release group UUID)
 export const missingAlbumTracksQueryOptions = (releaseId: string) => ({
     queryKey: ['missingAlbumTracks', releaseId],

@@ -58,6 +58,7 @@ import { Search } from '@/components/common/inputs/search';
 import { CoverArt } from '@/components/library/coverArt';
 import { useAudioContext } from '@/components/library/audio/context';
 import { PageWrapper } from '@/components/common/page';
+import { AlbumEditButton } from '@/components/library/tagEditor';
 
 export const Route = createFileRoute('/library/browse/artists/$artist')({
     loader: async (opts) => {
@@ -420,6 +421,7 @@ function AlbumsViewer({
                                 <TableCell>Album</TableCell>
                                 <TableCell sx={{ width: 60 }} align="right">Tracks</TableCell>
                                 <TableCell sx={{ width: 60 }}>Year</TableCell>
+                                <TableCell sx={{ width: 32 }} />
                             </TableRow>
                         </TableHead>
                         <TableBody>
@@ -480,6 +482,9 @@ function AlbumsViewer({
                                         {trackCountByAlbumId.get(album.id) ?? '-'}
                                     </TableCell>
                                     <TableCell>{album.year ?? '-'}</TableCell>
+                                    <TableCell sx={{ p: 0.5, width: 32 }}>
+                                        <AlbumEditButton albumId={album.id} />
+                                    </TableCell>
                                 </TableRow>
                             ))}
                         </TableBody>
@@ -1920,23 +1925,26 @@ function MissingAlbumsViewer({
                                                 </Box>
                                             </TableCell>
 
-                                            {/* Download for missing / Delete for library */}
-                                            <TableCell sx={{ p: 0.5, width: 56, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
-                                                <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                            {/* Edit tags (library only) / Download (missing) / Delete (library) */}
+                                            <TableCell sx={{ p: 0.5, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                                                <Box sx={{ display: 'flex', justifyContent: 'center', gap: 0.25 }}>
                                                     {isLibrary ? (
-                                                        <Tooltip title="Remove from library and delete files">
-                                                            <span>
-                                                                <IconButton
-                                                                    size="small"
-                                                                    color="error"
-                                                                    onClick={() => setPendingDelete(album)}
-                                                                    disabled={deleteMutation.isPending}
-                                                                    sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
-                                                                >
-                                                                    <Trash2 size={14} />
-                                                                </IconButton>
-                                                            </span>
-                                                        </Tooltip>
+                                                        <>
+                                                            <AlbumEditButton albumId={album.library_album_id as number} />
+                                                            <Tooltip title="Remove from library and delete files">
+                                                                <span>
+                                                                    <IconButton
+                                                                        size="small"
+                                                                        color="error"
+                                                                        onClick={() => setPendingDelete(album)}
+                                                                        disabled={deleteMutation.isPending}
+                                                                        sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
+                                                                    >
+                                                                        <Trash2 size={14} />
+                                                                    </IconButton>
+                                                                </span>
+                                                            </Tooltip>
+                                                        </>
                                                     ) : (
                                                         <DownloadButton album={album} artist={artist} />
                                                     )}
