@@ -3,7 +3,7 @@ services:
         image: pspitzner/beets-flask:stable
         restart: unless-stopped
         ports:
-            - "5001:5001"
+            - "5002:5002"
         environment:
             # Change to your timezone
             TZ: "Europe/Berlin"

@@ -16,17 +16,144 @@ from beets_flask.database.models.states import (
     SessionStateInDb,
     TaskStateInDb,
 )
-from beets_flask.server.exceptions import InvalidUsageException, NotFoundException
-from beets_flask.server.routes.db_models.base import (
-    _cursor_from_string,
-    _cursor_to_string,
-    _get_n_with_cursor,
-)
-from beets_flask.server.routes.db_models.session import (
-    _get_folder_status_from_db,
-    _get_folder_status_from_queues,
+from collections.abc import Sequence
+from typing import TypeVar
+
+from rq.job import Job
+
+from beets_flask.database.models.base import Base
+from beets_flask.database.models.states import FolderInDb as _FolderInDb
+from beets_flask.importer.progress import FolderStatus, Progress
+from beets_flask.logger import log
+from beets_flask.server.exceptions import (
+    InvalidUsageException,
+    NotFoundException,
+    SerializedException,
 )
 from beets_flask.server.utility import pop_extra_meta, pop_folder_params, pop_query_param
+
+_T = TypeVar("_T", bound=Base)
+
+
+# ── Cursor helpers (inlined from server/routes/db_models/base.py) ─────────────
+
+def _cursor_to_string(cursor: tuple[datetime, str] | None) -> str | None:
+    if cursor is None:
+        return None
+    return f"{cursor[0].isoformat()},{cursor[1]}".encode().hex()
+
+
+def _cursor_from_string(cursor: str | None) -> tuple[datetime, str] | None:
+    if cursor is None:
+        return None
+    cursor = bytes.fromhex(cursor).decode("utf-8")
+    c = cursor.split(",")
+    if len(c) != 2:
+        return None
+    return datetime.fromisoformat(c[0]), c[1]
+
+
+def _get_n_with_cursor(model: type[_T], cursor: tuple[datetime, str] | None = None, n_items: int = 50):
+    with db_session_factory() as db_session:
+        query = select(model)
+        if cursor:
+            query = query.where((model.created_at <= cursor[0]).__and__(model.id < cursor[1]))
+        query = query.order_by(model.created_at.desc(), model.id.desc()).limit(n_items)
+        items: Sequence[_T] = db_session.execute(query).scalars().all()
+        items_list = [item.to_dict() for item in items]
+    next_cursor = (items[-1].created_at, items[-1].id) if len(items) == n_items else None
+    return items_list, next_cursor
+
+
+# ── Status helpers (inlined from server/routes/db_models/session.py) ──────────
+
+def _get_folder_status_from_db(hash: str) -> tuple[FolderStatus, datetime | None, SerializedException | None]:
+    with db_session_factory() as db_session:
+        s_state_indb = db_session.execute(
+            select(SessionStateInDb)
+            .where(SessionStateInDb.folder_hash == hash)
+            .order_by(SessionStateInDb.folder_revision.desc())
+        ).scalars().first()
+        if s_state_indb is None:
+            return FolderStatus.UNKNOWN, None, None
+        status = FolderStatus.UNKNOWN
+        if s_state_indb.progress == Progress.NOT_STARTED:
+            status = FolderStatus.NOT_STARTED
+        elif s_state_indb.progress == Progress.DELETING:
+            status = FolderStatus.DELETING
+        elif s_state_indb.progress == Progress.DELETION_COMPLETED:
+            status = FolderStatus.DELETED
+        elif s_state_indb.progress == Progress.PREVIEW_COMPLETED:
+            status = FolderStatus.PREVIEWED
+        elif s_state_indb.progress == Progress.IMPORT_COMPLETED:
+            status = FolderStatus.IMPORTED
+        elif s_state_indb.progress < Progress.PREVIEW_COMPLETED:
+            status = FolderStatus.PREVIEWING
+        elif s_state_indb.progress < Progress.IMPORT_COMPLETED:
+            status = FolderStatus.IMPORTING
+        exc = s_state_indb.exception if s_state_indb.exception is not None else None
+        if exc is not None:
+            status = FolderStatus.FAILED
+        return status, s_state_indb.updated_at, exc
+
+
+def _get_folder_status_from_queues(hash: str) -> tuple[FolderStatus, datetime | None, SerializedException | None]:
+    from beets_flask.redis import queues, redis_conn
+
+    q_kinds: dict[str, list[Job]] = {"queued": [], "scheduled": [], "started": [], "failed": [], "finished": []}
+    for q in queues:
+        q_kinds["queued"].extend(_get_jobs(q, redis_conn))
+        q_kinds["scheduled"].extend(_get_jobs(q.scheduled_job_registry, redis_conn))
+        q_kinds["started"].extend(_get_jobs(q.started_job_registry, redis_conn))
+        q_kinds["failed"].extend(_get_jobs(q.failed_job_registry, redis_conn))
+        q_kinds["finished"].extend(_get_jobs(q.finished_job_registry, redis_conn))
+
+    job_date = None
+    status = FolderStatus.UNKNOWN
+    exc = None
+    for kind, jobs in q_kinds.items():
+        hit = _is_hash_in_jobs(hash, jobs)
+        if hit is None:
+            continue
+        meta, job, _job_date = hit
+        if job_date is not None and _job_date <= job_date:
+            continue
+        job_date = _job_date
+        if kind in ("queued", "scheduled"):
+            status = FolderStatus.PENDING
+        elif kind == "failed":
+            status = FolderStatus.FAILED
+        elif kind == "started":
+            status = FolderStatus.IMPORTING if "import" in meta["job_kind"] else FolderStatus.PREVIEWING
+        elif kind == "finished":
+            status = FolderStatus.IMPORTED if "import" in meta["job_kind"] else FolderStatus.PREVIEWED
+        res = job.latest_result()
+        if res and res.return_value and isinstance(res.return_value, dict) and "type" in res.return_value:
+            exc = SerializedException(
+                type=res.return_value["type"],
+                message=res.return_value["message"],
+                description=res.return_value.get("description"),
+                trace=res.return_value.get("trace"),
+            )
+            status = FolderStatus.FAILED
+        else:
+            exc = None
+    return status, job_date, exc
+
+
+def _get_jobs(registry, connection):
+    return [j for j in Job.fetch_many(registry.get_job_ids(), connection=connection) if j is not None]
+
+
+def _is_hash_in_jobs(hash: str, jobs: list[Job]) -> tuple[dict, Job, datetime] | None:
+    for j in jobs:
+        meta = j.get_meta(False)
+        if meta.get("folder_hash") == hash:
+            job_dates = [d for d in [j.enqueued_at, j.started_at, j.created_at, j.ended_at] if d]
+            return meta, j, max(job_dates)
+    return None
+
+
 from beets_flask.server.websocket.status import FolderStatusUpdate, JobStatusUpdate
 
 router = APIRouter(tags=["db-models"])
@@ -112,11 +239,13 @@ async def session_enqueue(params: dict[str, Any] = Body(default_factory=dict)) -
             )
         )
 
-    return JobStatusUpdate(
-        message=f"{len(jobs)} added as kind: {kind}",
-        num_jobs=len(jobs),
-        job_metas=[j.get_meta() for j in jobs],
-    )
+    return {
+        "message": f"{len(jobs)} added as kind: {kind}",
+        "num_jobs": len(jobs),
+        "job_metas": [j.get_meta() for j in jobs],
+        "exc": None,
+        "event": "job_status_update",
+    }
 
 
 @session_router.post("/add_candidates")
@@ -157,26 +286,26 @@ async def session_add_candidates(params: dict[str, Any] = Body(default_factory=d
         extra_meta=extra_meta[0],
         **params,
     )
-    return JobStatusUpdate(
-        message=f"searching_candidates for {folder_path}",
-        num_jobs=1,
-        job_metas=[job.get_meta()],
-    )
+    return {
+        "message": f"searching_candidates for {folder_path}",
+        "num_jobs": 1,
+        "job_metas": [job.get_meta()],
+        "exc": None,
+        "event": "job_status_update",
+    }
 
 
 @session_router.get("/status")
-async def session_status(params: dict[str, Any] = Body(default_factory=dict)) -> list:
+async def session_status() -> list:
     from datetime import timedelta
 
-    folder_hashes, folder_paths = pop_folder_params(params)
-
-    if len(folder_hashes) == 0:
-        with db_session_factory() as session:
-            folders = session.execute(
-                select(FolderInDb).order_by(FolderInDb.created_at.desc())
-            ).scalars().all()
-            folder_hashes = [f.hash for f in folders]
-            folder_paths = [f.full_path for f in folders]
+    # Return status for all folders (frontend always calls this as a plain GET)
+    with db_session_factory() as session:
+        folders = session.execute(
+            select(FolderInDb).order_by(FolderInDb.created_at.desc())
+        ).scalars().all()
+        folder_hashes = [f.hash for f in folders]
+        folder_paths = [f.full_path for f in folders]
 
     from beets_flask.importer.progress import FolderStatus
 

@@ -33,7 +33,7 @@ If you want to create it manually, you can use the following content:
 docker-compose up
 ```
 
-The application should now be available at `http://localhost:5001`!
+The application should now be available at `http://localhost:5002`!
 
 ## Using docker
 

@@ -57,7 +57,7 @@ export interface InboxStats {
     imported_via_gui: number;
     size: number;
     nFiles: number;
-    last_created: Date | null;
+    last_created: unknown;
 }
 
 export interface FolderStatusUpdate {

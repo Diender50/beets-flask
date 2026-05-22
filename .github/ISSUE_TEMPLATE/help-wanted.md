@@ -42,6 +42,6 @@ Find the output from `docker logs beets-flask` below:
 [Entrypoint]   Backend:  1.1.1
 [Entrypoint]   Frontend: 1.1.1
 [Entrypoint]   Mode:     prod
-INFO:     Uvicorn running on http://0.0.0.0:5001 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:5002 (Press CTRL+C to quit)
 ...
 ```

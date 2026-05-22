@@ -14,9 +14,6 @@ rm /repo/frontend/vite.config.ts.timestamp-*.mjs >/dev/null 2>&1
 mkdir -p /config/beets
 mkdir -p /config/beets-flask
 
-export FLASK_ENV=development
-export FLASK_DEBUG=1
-
 # ------------------------------------------------------------------------------------ #
 #                                     start backend                                    #
 # ------------------------------------------------------------------------------------ #
@@ -40,20 +37,8 @@ redis-cli FLUSHALL
 # generate types for the frontend (only done in dev mode)
 python ./generate_types.py
 
-# we need to run with one worker for socketio to work (but need at least threads for SSEs)
-# sufficient timout for the interactive import sessions, which may take a couple of minutes
-# gunicorn --worker-class eventlet -w 1 --threads 32  --timeout 300 --bind 0.0.0.0:5001 --reload 'main:create_app()'
-
-
-# see for available cli options:
-# https://www.uvicorn.org/#command-line-options
-uvicorn beets_flask.server.app:create_app --port 5001 \
-    --host 0.0.0.0 \
-    --factory \
-    --workers 1 \
-    --use-colors \
-    --reload &
-uvicorn_pid=$!
+python ./launch_fastapi.py &
+fastapi_pid=$!
 
 cd /repo/frontend
 
@@ -63,7 +48,7 @@ if [ ! -x /repo/frontend/node_modules/.bin/vite ]; then
     pnpm install --frozen-lockfile
 fi
 
-# pnpm run build:dev &  # use this for debugging with ios, port 5001 (no cors allowed)
+# pnpm run build:dev &  # use this for debugging with ios (no cors allowed)
 pnpm run dev & # normal dev, port 5173
 vite_pid=$!
 sleep 3
@@ -74,7 +59,7 @@ if ! kill -0 $vite_pid 2>/dev/null; then
 fi
 
 # Keep container tied to backend lifecycle.
-wait $uvicorn_pid
+wait $fastapi_pid
 
 
 

@@ -1,8 +1,9 @@
-# FastAPI Migration Context
+# FastAPI Migration — COMPLETED
 
-## State: scaffolding done, migrations pending
+> **Status: done.** Quart removed. FastAPI is the sole backend on port 5002.
+> This file is kept as a historical reference only.
 
-Quart (async Flask) → FastAPI. Both ASGI on Uvicorn. Quart stays on :5001, FastAPI on :5002.
+~~Quart (async Flask) → FastAPI. Both ASGI on Uvicorn. Quart stays on :5001, FastAPI on :5002.~~
 Migrate bottom-up: add each module to `server_v2/routes/`, register in `server_v2/routes/__init__.py`.
 
 ---

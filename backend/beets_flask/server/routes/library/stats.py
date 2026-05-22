@@ -1,41 +1,33 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing_extensions import TypedDict
 
-from quart import Blueprint, g, jsonify
+from fastapi import APIRouter
 
 from beets_flask.config import get_config
 from beets_flask.disk import dir_size
+from beets_flask.server.dependencies import BeetsLib
 
-if TYPE_CHECKING:
-    # For type hinting the global g object
-    from . import g
-
-stats_bp = Blueprint("stats", __name__)
-
-__all__ = ["stats_bp"]
+router = APIRouter(tags=["library"])
 
 
 class LibraryStats(TypedDict):
     libraryPath: str
-    items: int  # Num Tracks and stuff / num Files
-    albums: int  # Num Albums
-    artists: int  # Num Artists
-    genres: int  # Num Genres
-    labels: int  # Num Labels
+    items: int
+    albums: int
+    artists: int
+    genres: int
+    labels: int
+    size: int
+    lastItemAdded: int | None
+    lastItemModified: int | None
+    runtime: float
 
-    size: int  # bytes of the library folder
-    lastItemAdded: int | None  # UTC timestamp
-    lastItemModified: int | None  # UTC timestamp
-    runtime: int  # seconds
 
-
-@stats_bp.route("/stats", methods=["GET"])
-async def stats():
-    """Get library statistics."""
-
+@router.get("/stats")
+async def stats(lib: BeetsLib) -> LibraryStats:
     config = get_config()
 
-    with g.lib.transaction() as tx:
+    with lib.transaction() as tx:
         album_stats = tx.query(
             "SELECT COUNT(*), COUNT(DISTINCT genre), COUNT(DISTINCT label), COUNT(DISTINCT albumartist) FROM albums"
         )
@@ -43,9 +35,9 @@ async def stats():
             "SELECT COUNT(*), MAX(added), MAX(mtime), SUM(length) FROM items"
         )
 
-    lib_path = cast(str, config["directory"].get(str))
+    lib_path = str(config["directory"].get(str))
 
-    ret: LibraryStats = {
+    return {
         "libraryPath": str(config["directory"].as_str()),
         "items": items_stats[0][0],
         "albums": album_stats[0][0],
@@ -61,5 +53,3 @@ async def stats():
         ),
         "runtime": items_stats[0][3] or 0,
     }
-
-    return jsonify(ret)
