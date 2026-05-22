@@ -1,10 +1,20 @@
-"""Launch the FastAPI server on port 5002 (parallel to Quart on 5001)."""
+"""Launch the FastAPI server on port 5002."""
+
+import os
+import sys
 
 import uvicorn
 
-from beets_flask.server_v2.app import create_app
+# Ensure the backend directory is on the path regardless of CWD
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
-app = create_app()
+from beets_flask.server.app import create_app
+from beets_flask.server.websocket import wrap_with_socketio
+
+# app is the socketio-wrapped ASGI app; FastAPI lives inside it.
+app = wrap_with_socketio(create_app())
 
 if __name__ == "__main__":
     uvicorn.run(
@@ -12,5 +22,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=5002,
         reload=True,
-        reload_dirs=["beets_flask"],
+        reload_dirs=[_backend_dir],
     )

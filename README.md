@@ -55,7 +55,7 @@ We provide a docker image with the full beeets-flask setup. You can run it with 
 <!-- start setup container -->
 
 ```sh
-docker run -d -p 5001:5001 \
+docker run -d -p 5002:5002 \
     -e TZ=Europe/Berlin \
     -e USER_ID=1000 \
     -e GROUP_ID=1000 \
@@ -76,7 +76,7 @@ services:
         image: pspitzner/beets-flask:stable
         restart: unless-stopped
         ports:
-            - "5001:5001"
+            - "5002:5002"
         environment:
             # 502 is default on macos, 1000 on linux
             TZ: Europe/Berlin

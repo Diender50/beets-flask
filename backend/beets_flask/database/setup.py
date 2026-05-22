@@ -1,7 +1,6 @@
 from contextlib import contextmanager
 from functools import wraps
 
-from quart import Quart
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
@@ -14,16 +13,14 @@ engine: Engine | None = None
 session_factory: scoped_session[Session]
 
 
-def setup_database(app: Quart | None = None) -> None:
-    """Set up the database connection and session factory for the FLask application.
+def setup_database(app=None) -> None:
+    """Set up the database connection and session factory.
 
-    This function initializes the global `engine` and `session_factory` variables
-    using the database URI specified in the application's configuration. It also
-    sets up a teardown hook to gracefully close the database session when the
-    application context is torn down.
+    Initializes the global `engine` and `session_factory` variables
+    using the database URI from config.
 
     Args:
-        app (Quart): The Quart application instance.
+        app: Optional ASGI app instance (unused; kept for backward compat).
 
     Returns
     -------
@@ -35,13 +32,6 @@ def setup_database(app: Quart | None = None) -> None:
         _reset_database()
 
     _create_tables(engine)
-
-    if app is not None:
-        # Gracefully shutdown the database session, if launched
-        # from within a Flask app context.
-        @app.teardown_appcontext
-        def shutdown_session(exception=None) -> None:
-            session_factory.remove()
 
 
 def __setup_factory():

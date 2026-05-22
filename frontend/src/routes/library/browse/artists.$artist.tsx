@@ -998,9 +998,9 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         status === 'pending'
             ? 'Queued'
             : status === 'downloading'
-              ? 'Working'
+              ? ''
               : status === 'done'
-                ? 'Done'
+                ? ''
                 : status === 'error'
                   ? 'Failed'
                   : 'Ready';

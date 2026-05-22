@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Beets-Flask is a full-stack web interface around [Beets](https://beets.io/), a music organizer/tagger. It generates import previews, lets users confirm/tweak matches via a web GUI, then commits imports to the library. The app runs as a Docker container (Alpine Linux) with a Python/Quart backend and a React/TypeScript frontend.
+Beets-Flask is a full-stack web interface around [Beets](https://beets.io/), a music organizer/tagger. It generates import previews, lets users confirm/tweak matches via a web GUI, then commits imports to the library. The app runs as a Docker container (Alpine Linux) with a Python/FastAPI backend and a React/TypeScript frontend.
 
 ## Commands
 
 ### Frontend (`frontend/`)
 
 ```bash
-pnpm dev            # Vite dev server (port 5173, proxies /api_v1/* and /socket.io to :5001)
+pnpm dev            # Vite dev server (port 5173, proxies /api_v1/* and /socket.io to :5002)
 pnpm build          # Production build
 pnpm lint           # ESLint (zero warnings allowed)
 pnpm format         # Prettier (write)
@@ -53,7 +53,7 @@ docker compose -f docker/docker-compose.tests.yaml up  # Test environment
 
 | Module | Role |
 |---|---|
-| `server/app.py` | Quart app factory; registers routes and Socket.IO |
+| `server/app.py` | FastAPI app factory; registers routes and Socket.IO |
 | `server/routes/` | REST API endpoints (inbox, library, config, discovery, art, audio, terminal) |
 | `server/websocket/` | Socket.IO handlers for real-time status and terminal I/O |
 | `importer/` | Beets import pipeline: state machine that drives preview generation and actual imports |
@@ -63,7 +63,7 @@ docker compose -f docker/docker-compose.tests.yaml up  # Test environment
 | `discovery/` | Pluggable download providers (Deemix, Slskd, Squidwtf, Last.fm) |
 | `config/` | Confuse-based config loading; merges beets config + beets-flask overrides |
 
-Key runtime dependencies: **Quart** (async ASGI), **Redis + RQ** (job queue), **SQLAlchemy** (SQLite ORM), **python-socketio** (WebSocket), **Uvicorn** (ASGI server).
+Key runtime dependencies: **FastAPI** (async ASGI), **Redis + RQ** (job queue), **SQLAlchemy** (SQLite ORM), **python-socketio** (WebSocket), **Uvicorn** (ASGI server).
 
 ### Frontend (`frontend/src/`)
 
@@ -87,7 +87,7 @@ Key libraries: **TanStack Router** (file-based, code-split), **TanStack React Qu
 
 ### Dev proxy
 
-In local dev the Vite server (`:5173`) proxies `^/api_v1/.*` and `/socket.io` to the Quart server at `127.0.0.1:5001`. In production, Quart serves the built frontend directly on port 5001.
+In local dev the Vite server (`:5173`) proxies `^/api_v1/.*` and `/socket.io` to the FastAPI server at `127.0.0.1:5002`. In production, FastAPI serves the built frontend directly on port 5002.
 
 ### Type generation
 

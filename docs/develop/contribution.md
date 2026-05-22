@@ -106,7 +106,7 @@ services:
         image: beets-flask
         restart: unless-stopped
         ports:
-            - "5001:5001"
+            - "5002:5002"
             - "5173:5173"
         environment:
             USER_ID: 1000

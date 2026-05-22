@@ -1,25 +1,27 @@
+"""socketio server + FastAPI wrapper."""
+
+from __future__ import annotations
+
 import os
 from collections.abc import Callable
 from typing import cast
 
-import socketio
+import socketio as _sio_lib
+from starlette.types import ASGIApp
 
-old_on = socketio.AsyncServer.on
 
-
-# Gets rid of the type error in the decorator
-class TypedAsyncServer(socketio.AsyncServer):
+class TypedAsyncServer(_sio_lib.AsyncServer):
     def on(self, event: str, namespace: str | None = None) -> Callable: ...  # type: ignore
 
 
 if os.environ.get("PYTEST_CURRENT_TEST", ""):
     client_manager = None
 else:
-    client_manager = socketio.AsyncRedisManager("redis://")
+    client_manager = _sio_lib.AsyncRedisManager("redis://")
 
 sio: TypedAsyncServer = cast(
     TypedAsyncServer,
-    socketio.AsyncServer(
+    _sio_lib.AsyncServer(
         async_mode="asgi",
         logger=False,
         engineio_logger=False,
@@ -29,12 +31,9 @@ sio: TypedAsyncServer = cast(
 )
 
 
-def register_socketio(app):
-    app.asgi_app = socketio.ASGIApp(sio, app.asgi_app, socketio_path="/socket.io")
+def wrap_with_socketio(fastapi_app: ASGIApp) -> ASGIApp:
+    """Wrap FastAPI app with socketio — registers @sio.on handlers via module import."""
+    import beets_flask.server.websocket.status as _  # noqa: F401
+    import beets_flask.server.websocket.terminal as __  # noqa: F401
 
-    # Register all socketio namespaces
-    from .status import register_status
-    from .terminal import register_tmux
-
-    register_tmux()
-    register_status()
+    return _sio_lib.ASGIApp(sio, fastapi_app, socketio_path="socket.io")
