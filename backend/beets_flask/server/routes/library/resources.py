@@ -29,6 +29,7 @@ from beets.library import Album, Item, Library, parse_query_string
 from fastapi import APIRouter
 
 from beets_flask.config import get_config
+from beets_flask.library_cache import invalidate_missing_cache_for_string
 from beets_flask.logger import log
 from beets_flask.server.exceptions import InvalidUsageException, NotFoundException
 from beets_flask.server.utility import pop_query_param
@@ -209,8 +210,10 @@ class ItemResponseMinimal(TypedDict):
     name: str
     # Full path to the item on disk
     path: str
-    # Primary artist for the item
+    # Primary artist for the item (joined string)
     artist: str
+    # Individual artists (multi-valued tag)
+    artists: list[str]
     # Year the item was published
     year: int
 
@@ -289,6 +292,7 @@ def _repr_Item(item: Item | None, minimal=False) -> ItemResponse | ItemResponseM
             "id",
             "name",
             "artist",
+            "artists",
             "albumartist",
             "album",
             "album_id",
@@ -397,8 +401,10 @@ class AlbumResponseMinimal(TypedDict):
     id: int
     # Name of the album
     name: str
-    # Primary artist for the album
+    # Primary artist for the album (joined string)
     albumartist: str
+    # Individual album artists (multi-valued tag)
+    albumartists: list[str]
     # Year the album was published
     year: int
     # Date the album was added to the library
@@ -465,7 +471,7 @@ def _rep_Album(
     out: dict[str, Any] = dict()
 
     if minimal:
-        keys = ["id", "name", "albumartist", "year", "added", "albumtype"]
+        keys = ["id", "name", "albumartist", "albumartists", "year", "added", "albumtype"]
     else:
         # Use all keys
         keys = album.keys() + ["name"]
@@ -622,6 +628,7 @@ async def delete_album(id: int, lib: BeetsLib, delete: str | None = None) -> dic
     item = lib.get_album(id)
     if not item:
         raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
+    invalidate_missing_cache_for_string(item.albumartist)
     delete_entities([item], delete is not None)
     return {"deleted": True}
 

@@ -1414,7 +1414,7 @@ function MissingAlbumsViewer({
         onSuccess: (_data: void, albumId: number) => {
             // Optimistically remove from library cache → merged list updates instantly.
             queryClient.setQueryData(
-                albumsByArtistQueryOptions(artist, false, true).queryKey,
+                albumsByArtistQueryOptions(artist, false, false).queryKey,
                 (old: Album<false, false>[] | undefined) => (old ?? []).filter((a) => a.id !== albumId)
             );
             // Optimistically add to missing albums cache.

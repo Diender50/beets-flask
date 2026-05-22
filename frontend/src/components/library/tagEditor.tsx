@@ -5,13 +5,17 @@
  *
  * Save button is wired to a TODO stub; backend endpoint not yet implemented.
  */
-import { Suspense, useCallback, useState } from 'react';
+import { ArrowRightIcon, PlusIcon, XIcon } from 'lucide-react';
+import { Suspense, useCallback, useRef, useState } from 'react';
 import { PencilIcon } from 'lucide-react';
 import {
     Box,
     Button,
+    Chip,
     CircularProgress,
+    DialogActions,
     DialogContent,
+    Divider,
     IconButton,
     Tab,
     Tabs,
@@ -32,7 +36,7 @@ import type { AlbumResponseExpanded, ItemResponse } from '@/pythonTypes';
 
 interface AlbumFields {
     album: string;
-    albumartist: string;
+    albumartists: string[];
     year: string;
     genre: string;
     label: string;
@@ -41,8 +45,57 @@ interface AlbumFields {
 interface TrackFields {
     id: number;
     name: string;
-    artist: string;
+    artists: string[];
     track: string;
+}
+
+// ── Diff types + helpers ──────────────────────────────────────────────────────
+
+interface FieldChange { label: string; before: string; after: string }
+interface TrackChange { trackNum: string; trackName: string; changes: FieldChange[] }
+interface TagDiff { albumChanges: FieldChange[]; trackChanges: TrackChange[] }
+
+const joinArtists = (a: string[]) => a.filter(Boolean).join(', ') || '—';
+
+function computeDiff(
+    origAlbum: AlbumFields,
+    curAlbum: AlbumFields,
+    origTracks: Map<number, TrackFields>,
+    curTracks: Map<number, TrackFields>,
+    sortedItems: { id: number }[]
+): TagDiff {
+    const albumChanges: FieldChange[] = [];
+    for (const { key, label } of ALBUM_FIELD_DEFS) {
+        const a = origAlbum[key];
+        const b = curAlbum[key];
+        const changed = Array.isArray(a) && Array.isArray(b)
+            ? JSON.stringify(a) !== JSON.stringify(b)
+            : a !== b;
+        if (changed)
+            albumChanges.push({
+                label,
+                before: Array.isArray(a) ? joinArtists(a as string[]) : (a as string),
+                after:  Array.isArray(b) ? joinArtists(b as string[]) : (b as string),
+            });
+    }
+
+    const trackChanges: TrackChange[] = [];
+    for (const { id } of sortedItems) {
+        const orig = origTracks.get(id);
+        const cur = curTracks.get(id);
+        if (!orig || !cur) continue;
+        const changes: FieldChange[] = [];
+        if (orig.track !== cur.track)
+            changes.push({ label: '#', before: orig.track, after: cur.track });
+        if (orig.name !== cur.name)
+            changes.push({ label: 'Title', before: orig.name, after: cur.name });
+        if (JSON.stringify(orig.artists) !== JSON.stringify(cur.artists))
+            changes.push({ label: 'Artist', before: joinArtists(orig.artists), after: joinArtists(cur.artists) });
+        if (changes.length)
+            trackChanges.push({ trackNum: cur.track, trackName: cur.name, changes });
+    }
+
+    return { albumChanges, trackChanges };
 }
 
 // ── Shared input styling ──────────────────────────────────────────────────────
@@ -154,29 +207,39 @@ function AlbumTagEditorDialog({
     const items: ItemResponse[] = expanded.items ?? [];
 
     const [tab, setTab] = useState(0);
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
-    const [albumFields, setAlbumFields] = useState<AlbumFields>(() => ({
+    const initAlbumFields = (): AlbumFields => ({
         album: expanded.name ?? '',
-        albumartist: expanded.albumartist ?? '',
+        albumartists: expanded.albumartists?.length
+            ? expanded.albumartists
+            : [expanded.albumartist ?? ''],
         year: String(expanded.year ?? ''),
         genre: expanded.genre ?? '',
         label: expanded.label ?? '',
-    }));
+    });
 
-    const [trackFields, setTrackFields] = useState<Map<number, TrackFields>>(
-        () =>
-            new Map(
-                items.map((item) => [
-                    item.id,
-                    {
-                        id: item.id,
-                        name: item.name ?? '',
-                        artist: item.artist ?? '',
-                        track: String(item.track ?? ''),
-                    },
-                ])
-            )
-    );
+    const initTrackFields = (): Map<number, TrackFields> =>
+        new Map(
+            items.map((item) => [
+                item.id,
+                {
+                    id: item.id,
+                    name: item.name ?? '',
+                    artists: item.artists?.length
+                        ? item.artists
+                        : [item.artist ?? ''],
+                    track: String(item.track ?? ''),
+                },
+            ])
+        );
+
+    // Snapshot of original values — never mutated after mount
+    const originalAlbum = useRef<AlbumFields>(initAlbumFields());
+    const originalTracks = useRef<Map<number, TrackFields>>(initTrackFields());
+
+    const [albumFields, setAlbumFields] = useState<AlbumFields>(initAlbumFields);
+    const [trackFields, setTrackFields] = useState<Map<number, TrackFields>>(initTrackFields);
 
     const sortedItems = [...items].sort(
         (a, b) => (a.track ?? 0) - (b.track ?? 0)
@@ -188,14 +251,14 @@ function AlbumTagEditorDialog({
         mutationFn: () =>
             updateAlbumTags(albumId, {
                 album: albumFields.album || undefined,
-                albumartist: albumFields.albumartist || undefined,
+                albumartists: albumFields.albumartists.filter(Boolean),
                 year: albumFields.year ? Number(albumFields.year) : undefined,
                 genre: albumFields.genre || undefined,
                 label: albumFields.label || undefined,
                 tracks: [...trackFields.values()].map((f) => ({
                     id: f.id,
                     name: f.name || undefined,
-                    artist: f.artist || undefined,
+                    artists: f.artists.filter(Boolean),
                     track: f.track ? Number(f.track) : undefined,
                 })),
             }),
@@ -229,15 +292,50 @@ function AlbumTagEditorDialog({
         []
     );
 
-    const handleSave = () => saveMutation.mutate();
+    const handleSave = () => {
+        const diff = computeDiff(
+            originalAlbum.current,
+            albumFields,
+            originalTracks.current,
+            trackFields,
+            sortedItems
+        );
+        if (diff.albumChanges.length === 0 && diff.trackChanges.length === 0) {
+            onClose(); // nothing changed
+            return;
+        }
+        setConfirmOpen(true);
+    };
+
+    const diff = confirmOpen
+        ? computeDiff(
+              originalAlbum.current,
+              albumFields,
+              originalTracks.current,
+              trackFields,
+              sortedItems
+          )
+        : null;
 
     return (
+        <>
         <Dialog
             open={open}
             onClose={(_, reason) => {
                 if (reason !== 'backdropClick') onClose();
             }}
-            title={expanded.name}
+            title={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                    {expanded.name}
+                    <Chip
+                        label="EXPERIMENTAL"
+                        size="small"
+                        color="warning"
+                        variant="outlined"
+                        sx={{ fontSize: '0.65rem', height: 20, fontWeight: 700, letterSpacing: '0.05em', '& .MuiChip-label': { px: 0.75 } }}
+                    />
+                </Box>
+            }
             title_icon={
                 <CoverArt
                     type="album"
@@ -330,17 +428,201 @@ function AlbumTagEditorDialog({
                 )}
             </Box>
         </Dialog>
+
+        {/* Confirmation dialog */}
+        {diff && (
+            <ConfirmDialog
+                open={confirmOpen}
+                diff={diff}
+                isPending={saveMutation.isPending}
+                error={saveMutation.isError ? (saveMutation.error as Error).message : null}
+                onConfirm={() => saveMutation.mutate()}
+                onCancel={() => setConfirmOpen(false)}
+            />
+        )}
+    </>
+    );
+}
+
+// ── Confirmation dialog ───────────────────────────────────────────────────────
+
+function ConfirmDialog({
+    open,
+    diff,
+    isPending,
+    error,
+    onConfirm,
+    onCancel,
+}: {
+    open: boolean;
+    diff: TagDiff;
+    isPending: boolean;
+    error: string | null;
+    onConfirm: () => void;
+    onCancel: () => void;
+}) {
+    const hasAlbum = diff.albumChanges.length > 0;
+    const hasTracks = diff.trackChanges.length > 0;
+    const needsMove =
+        diff.albumChanges.some((c) => c.label === 'Album' || c.label === 'Album artist');
+
+    return (
+        <Dialog
+            open={open}
+            onClose={(_, reason) => {
+                if (reason !== 'backdropClick') onCancel();
+            }}
+            title="Confirm changes"
+        >
+            <DialogContent sx={{ p: 0, overflow: 'auto', minWidth: 340 }}>
+                {hasAlbum && (
+                    <Box sx={{ px: 2, pt: 2, pb: hasTracks ? 1 : 2 }}>
+                        <Typography
+                            variant="caption"
+                            sx={{
+                                color: 'text.disabled',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.06em',
+                                fontSize: '0.65rem',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Album
+                        </Typography>
+                        <Box sx={{ mt: 0.75 }}>
+                            {diff.albumChanges.map((c) => (
+                                <ChangeLine key={c.label} change={c} />
+                            ))}
+                        </Box>
+                    </Box>
+                )}
+
+                {hasAlbum && hasTracks && (
+                    <Divider variant="middle" sx={{ my: 0.5 }} />
+                )}
+
+                {hasTracks && (
+                    <Box sx={{ px: 2, pt: hasAlbum ? 1 : 2, pb: 2 }}>
+                        <Typography
+                            variant="caption"
+                            sx={{
+                                color: 'text.disabled',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.06em',
+                                fontSize: '0.65rem',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Tracks
+                        </Typography>
+                        <Box sx={{ mt: 0.75, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                            {diff.trackChanges.map((tc) => (
+                                <Box key={tc.trackNum + tc.trackName}>
+                                    <Typography
+                                        variant="body2"
+                                        sx={{ fontWeight: 600, mb: 0.25 }}
+                                    >
+                                        {tc.trackNum}. {tc.trackName}
+                                    </Typography>
+                                    {tc.changes.map((c) => (
+                                        <ChangeLine key={c.label} change={c} indent />
+                                    ))}
+                                </Box>
+                            ))}
+                        </Box>
+                    </Box>
+                )}
+
+                {needsMove && (
+                    <Box sx={{ px: 2, pb: 2 }}>
+                        <Chip
+                            size="small"
+                            label="Files will be moved on disk"
+                            color="warning"
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem' }}
+                        />
+                    </Box>
+                )}
+            </DialogContent>
+
+            <DialogActions sx={{ px: 2, pb: 2, gap: 1 }}>
+                {error && (
+                    <Typography variant="caption" color="error" sx={{ flex: 1 }}>
+                        {error}
+                    </Typography>
+                )}
+                <Button onClick={onCancel} color="inherit" size="small" disabled={isPending}>
+                    Back
+                </Button>
+                <Button
+                    variant="contained"
+                    size="small"
+                    onClick={onConfirm}
+                    disabled={isPending}
+                    startIcon={isPending ? <CircularProgress size={12} color="inherit" /> : undefined}
+                >
+                    {isPending ? 'Saving…' : 'Confirm'}
+                </Button>
+            </DialogActions>
+        </Dialog>
+    );
+}
+
+function ChangeLine({ change, indent = false }: { change: FieldChange; indent?: boolean }) {
+    return (
+        <Box
+            sx={{
+                display: 'grid',
+                gridTemplateColumns: indent ? '60px 1fr' : '80px 1fr',
+                gap: 1,
+                alignItems: 'baseline',
+                py: 0.3,
+            }}
+        >
+            <Typography
+                variant="caption"
+                sx={{
+                    color: 'text.disabled',
+                    fontSize: '0.65rem',
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                }}
+            >
+                {change.label}
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                <Typography
+                    variant="body2"
+                    sx={{
+                        color: 'text.secondary',
+                        textDecoration: 'line-through',
+                        fontSize: '0.8rem',
+                    }}
+                >
+                    {change.before || '—'}
+                </Typography>
+                <ArrowRightIcon size={12} style={{ flexShrink: 0, opacity: 0.5 }} />
+                <Typography
+                    variant="body2"
+                    sx={{ color: 'text.primary', fontWeight: 600, fontSize: '0.8rem' }}
+                >
+                    {change.after || '—'}
+                </Typography>
+            </Box>
+        </Box>
     );
 }
 
 // ── Album fields panel ────────────────────────────────────────────────────────
 
-const ALBUM_FIELDS = [
-    { key: 'album',       label: 'Album',        type: 'text'   },
-    { key: 'albumartist', label: 'Album artist',  type: 'text'   },
-    { key: 'year',        label: 'Year',          type: 'number' },
-    { key: 'genre',       label: 'Genre',         type: 'text'   },
-    { key: 'label',       label: 'Label',         type: 'text'   },
+const ALBUM_FIELD_DEFS = [
+    { key: 'album',        label: 'Album',        type: 'text'   },
+    { key: 'albumartists', label: 'Album artists', type: 'list'   },
+    { key: 'year',         label: 'Year',          type: 'number' },
+    { key: 'genre',        label: 'Genre',         type: 'text'   },
+    { key: 'label',        label: 'Label',         type: 'text'   },
 ] as const;
 
 function AlbumFieldsPanel({
@@ -348,55 +630,59 @@ function AlbumFieldsPanel({
     onChange,
 }: {
     fields: AlbumFields;
-    onChange: <K extends keyof AlbumFields>(
-        field: K,
-        value: AlbumFields[K]
-    ) => void;
+    onChange: <K extends keyof AlbumFields>(field: K, value: AlbumFields[K]) => void;
 }) {
     const isMobile = useMediaQuery((theme) => theme.breakpoints.down('tablet'));
 
+    const labelSx = {
+        width: isMobile ? 'auto' : 108,
+        flexShrink: 0,
+        color: 'text.disabled',
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.06em',
+        fontSize: '0.65rem',
+        fontWeight: 600,
+    };
+
+    const rowSx = (last: boolean) => ({
+        display: 'flex',
+        flexDirection: isMobile ? ('column' as const) : ('row' as const),
+        alignItems: isMobile ? ('flex-start' as const) : ('center' as const),
+        py: isMobile ? 1.25 : 1,
+        gap: isMobile ? 0.25 : 2,
+        borderBottom: last ? 'none' : '1px solid',
+        borderColor: 'divider',
+    });
+
     return (
         <Box sx={{ px: 2, py: 1 }}>
-            {ALBUM_FIELDS.map(({ key, label, type }, i) => (
-                <Box
-                    key={key}
-                    sx={{
-                        display: 'flex',
-                        flexDirection: isMobile ? 'column' : 'row',
-                        alignItems: isMobile ? 'flex-start' : 'center',
-                        py: isMobile ? 1.25 : 1,
-                        gap: isMobile ? 0.25 : 2,
-                        borderBottom:
-                            i < ALBUM_FIELDS.length - 1 ? '1px solid' : 'none',
-                        borderColor: 'divider',
-                    }}
-                >
-                    <Typography
-                        variant="caption"
-                        sx={{
-                            width: isMobile ? 'auto' : 100,
-                            flexShrink: 0,
-                            color: 'text.disabled',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.06em',
-                            fontSize: '0.65rem',
-                            fontWeight: 600,
-                        }}
-                    >
-                        {label}
-                    </Typography>
-                    <TextField
-                        fullWidth
-                        variant="standard"
-                        type={type}
-                        value={fields[key]}
-                        onChange={(e) => onChange(key, e.target.value)}
-                        size="small"
-                        slotProps={{ input: { disableUnderline: true } }}
-                        sx={FIELD_SX}
-                    />
-                </Box>
-            ))}
+            {ALBUM_FIELD_DEFS.map(({ key, label, type }, i) => {
+                const isLast = i === ALBUM_FIELD_DEFS.length - 1;
+                return (
+                    <Box key={key} sx={rowSx(isLast)}>
+                        <Typography variant="caption" sx={labelSx}>
+                            {label}
+                        </Typography>
+                        {type === 'list' ? (
+                            <MultiValueField
+                                values={fields[key] as string[]}
+                                onChange={(v) => onChange(key, v as AlbumFields[typeof key])}
+                            />
+                        ) : (
+                            <TextField
+                                fullWidth
+                                variant="standard"
+                                type={type}
+                                value={fields[key] as string}
+                                onChange={(e) => onChange(key, e.target.value as AlbumFields[typeof key])}
+                                size="small"
+                                slotProps={{ input: { disableUnderline: true } }}
+                                sx={FIELD_SX}
+                            />
+                        )}
+                    </Box>
+                );
+            })}
         </Box>
     );
 }
@@ -476,6 +762,10 @@ function TrackListPanel({
         },
     };
 
+    // Remove unused vars
+    void artistInputSx;
+    void subArtistSx;
+
     return (
         <Box>
             {/* Column headers */}
@@ -490,7 +780,7 @@ function TrackListPanel({
                     borderColor: 'divider',
                 }}
             >
-                {['#', 'Title', ...(isMobile ? [] : ['Artist'])].map((h) => (
+                {['#', 'Title', ...(isMobile ? [] : ['Artists'])].map((h) => (
                     <Typography
                         key={h}
                         variant="caption"
@@ -512,7 +802,7 @@ function TrackListPanel({
             {items.map((item, idx) => {
                 const f = fields.get(item.id);
                 if (!f) return null;
-                const isVarious = f.artist !== albumArtist;
+                const isVarious = joinArtists(f.artists) !== albumArtist;
 
                 return (
                     <Box
@@ -523,7 +813,7 @@ function TrackListPanel({
                             gap: 1,
                             px: 2,
                             py: isMobile ? 1 : 0.5,
-                            alignItems: 'center',
+                            alignItems: 'start',
                             borderBottom:
                                 idx < items.length - 1 ? '1px solid' : 'none',
                             borderColor: 'divider',
@@ -545,10 +835,10 @@ function TrackListPanel({
                                 input: { disableUnderline: true },
                                 htmlInput: { min: 1 },
                             }}
-                            sx={{ ...trackNumSx, width: 28 }}
+                            sx={{ ...trackNumSx, width: 28, mt: 0.5 }}
                         />
 
-                        {/* Title (+ artist on mobile) */}
+                        {/* Title */}
                         <Box>
                             <TextField
                                 fullWidth
@@ -561,37 +851,107 @@ function TrackListPanel({
                                 sx={FIELD_SX}
                             />
                             {isMobile && (
-                                <TextField
-                                    fullWidth
-                                    variant="standard"
-                                    value={f.artist}
-                                    onChange={(e) =>
-                                        onChange(item.id, 'artist', e.target.value)
-                                    }
-                                    slotProps={{
-                                        input: { disableUnderline: true },
-                                    }}
-                                    sx={subArtistSx}
+                                <MultiValueField
+                                    values={f.artists}
+                                    onChange={(v) => onChange(item.id, 'artists', v)}
+                                    dimmed={!isVarious}
+                                    compact
                                 />
                             )}
                         </Box>
 
-                        {/* Artist — desktop only */}
+                        {/* Artists — desktop only */}
                         {!isMobile && (
-                            <TextField
-                                fullWidth
-                                variant="standard"
-                                value={f.artist}
-                                onChange={(e) =>
-                                    onChange(item.id, 'artist', e.target.value)
-                                }
-                                slotProps={{ input: { disableUnderline: true } }}
-                                sx={artistInputSx(isVarious)}
+                            <MultiValueField
+                                values={f.artists}
+                                onChange={(v) => onChange(item.id, 'artists', v)}
+                                dimmed={!isVarious}
                             />
                         )}
                     </Box>
                 );
             })}
+        </Box>
+    );
+}
+
+// ── Multi-value field (artists list) ──────────────────────────────────────────
+
+function MultiValueField({
+    values,
+    onChange,
+    dimmed = false,
+    compact = false,
+}: {
+    values: string[];
+    onChange: (values: string[]) => void;
+    dimmed?: boolean;
+    compact?: boolean;
+}) {
+    const update = (i: number, val: string) => {
+        const next = [...values];
+        next[i] = val;
+        onChange(next);
+    };
+    const remove = (i: number) => onChange(values.filter((_, idx) => idx !== i));
+    const add = () => onChange([...values, '']);
+
+    const entrySx = {
+        ...NO_SPINNER_SX,
+        '& .MuiInputBase-input': {
+            ...INPUT_BASE,
+            fontSize: compact ? '0.75rem' : '0.875rem',
+            color: dimmed ? 'text.secondary' : 'text.primary',
+        },
+        '& .MuiInputBase-root:hover .MuiInputBase-input': {
+            background: 'rgba(255,255,255,0.07)',
+        },
+        '& .Mui-focused .MuiInputBase-input': {
+            background: 'rgba(255,255,255,0.08)',
+            outline: '1px solid rgba(255,255,255,0.12)',
+        },
+    };
+
+    return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+            {values.map((val, i) => (
+                <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+                    <TextField
+                        fullWidth
+                        variant="standard"
+                        value={val}
+                        onChange={(e) => update(i, e.target.value)}
+                        slotProps={{ input: { disableUnderline: true } }}
+                        sx={entrySx}
+                    />
+                    {values.length > 1 && (
+                        <IconButton
+                            size="small"
+                            onClick={() => remove(i)}
+                            tabIndex={-1}
+                            sx={{ opacity: 0.3, '&:hover': { opacity: 1 }, p: 0.25, flexShrink: 0 }}
+                        >
+                            <XIcon size={11} />
+                        </IconButton>
+                    )}
+                </Box>
+            ))}
+            <Button
+                size="small"
+                onClick={add}
+                startIcon={<PlusIcon size={10} />}
+                sx={{
+                    alignSelf: 'flex-start',
+                    fontSize: '0.65rem',
+                    color: 'text.disabled',
+                    py: 0.1,
+                    px: 0.5,
+                    minWidth: 0,
+                    '&:hover': { color: 'text.secondary' },
+                }}
+            >
+                Add
+            </Button>
         </Box>
     );
 }

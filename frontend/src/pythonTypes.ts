@@ -85,6 +85,7 @@ export interface AlbumResponseMinimalExpanded {
     id: number;
     name: string;
     albumartist: string;
+    albumartists: Array<string>;
     year: number;
     added: Date;
     albumtype?: string;
@@ -97,6 +98,7 @@ export interface AlbumResponseMinimal {
     id: number;
     name: string;
     albumartist: string;
+    albumartists: Array<string>;
     year: number;
     added: Date;
     albumtype?: string;
@@ -106,6 +108,7 @@ export interface AlbumResponseExpanded {
     id: number;
     name: string;
     albumartist: string;
+    albumartists: Array<string>;
     year: number;
     added: Date;
     albumtype?: string;
@@ -121,6 +124,7 @@ export interface AlbumResponse {
     id: number;
     name: string;
     albumartist: string;
+    albumartists: Array<string>;
     year: number;
     added: Date;
     albumtype?: string;
@@ -239,6 +243,7 @@ export interface ItemResponseMinimal {
     name: string;
     path: string;
     artist: string;
+    artists: Array<string>;
     year: number;
     album: string;
     albumartist: string;
@@ -260,6 +265,7 @@ export interface ItemResponse {
     name: string;
     path: string;
     artist: string;
+    artists: Array<string>;
     year: number;
     album: string;
     albumartist: string;

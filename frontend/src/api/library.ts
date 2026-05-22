@@ -392,11 +392,11 @@ export const missingAlbumsByArtistQueryOptions = (
 
 export interface AlbumTagsPayload {
     album?: string;
-    albumartist?: string;
+    albumartists?: string[];
     year?: number;
     genre?: string;
     label?: string;
-    tracks?: { id: number; name?: string; artist?: string; track?: number }[];
+    tracks?: { id: number; name?: string; artists?: string[]; track?: number }[];
 }
 
 export async function updateAlbumTags(

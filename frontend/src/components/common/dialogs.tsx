@@ -21,7 +21,7 @@ export function Dialog({
     children,
     color = 'primary',
     ...props
-}: DialogProps & {
+}: Omit<DialogProps, 'title'> & {
     onClose: (
         event: object,
         reason: 'backdropClick' | 'escapeKeyDown' | 'xIconClick'
