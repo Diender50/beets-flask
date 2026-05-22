@@ -23,6 +23,7 @@ jobs:
             tags: ${{ steps.meta.outputs.tags }}
             labels: ${{ steps.meta.outputs.labels }}
             version: ${{ steps.meta.outputs.version }}
+            json: ${{ steps.meta.outputs.json }}
         steps:
             - name: Lowercase image name
               run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -137,7 +138,9 @@ jobs:
 
             - name: Create and push multi-arch manifest
               working-directory: /tmp/digests
+              env:
+                  DOCKER_METADATA_OUTPUT_JSON: ${{ needs.meta.outputs.json }}
               run: |
                   docker buildx imagetools create \
-                    $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ needs.meta.outputs.tags }}') \
+                    $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
                     $(printf '${{ env.IMAGE }}@sha256:%s ' *)
