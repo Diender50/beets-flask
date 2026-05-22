@@ -25,7 +25,13 @@ router = APIRouter(prefix="/inbox", tags=["inbox"])
 @router.get("/tree")
 async def get_tree() -> list:
     inbox_folders = get_inbox_folders()
-    return [path_to_folder(f, subdirs=False) for f in inbox_folders]
+    result = []
+    for f in inbox_folders:
+        try:
+            result.append(path_to_folder(f, subdirs=False))
+        except (FileNotFoundError, OSError):
+            log.debug(f"Inbox folder {f} not accessible during tree scan, skipping")
+    return result
 
 
 @router.post("/folder")
