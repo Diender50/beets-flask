@@ -33,4 +33,14 @@ python ./launch_watchdog_worker.py &
 
 redis-cli FLUSHALL >/dev/null 2>&1
 
-python ./launch_fastapi.py
+export IB_SERVER_CONFIG=prod
+
+# Use uvicorn directly (no --reload) for production.
+# socketio with AsyncRedisManager works with multiple workers via Redis pub/sub,
+# but 1 worker is safer to avoid any in-process state issues.
+uvicorn launch_fastapi:app \
+    --host 0.0.0.0 \
+    --port 5002 \
+    --workers 1 \
+    --log-level info \
+    --no-access-log
