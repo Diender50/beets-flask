@@ -26,7 +26,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PauseIcon, PlayIcon, RefreshCw, Trash2, XCircleIcon } from 'lucide-react';
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PauseIcon, PlayIcon, RefreshCw, Star, StarOff, Trash2, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
@@ -46,13 +46,17 @@ import {
     cleanupSlskdSearches,
     DownloadQuality,
     DownloadSuggestion,
+    followArtist,
+    followedArtistsQueryOptions,
     getDownloadJob,
     getDownloadSuggestions,
     qualityPriorityQueryOptions,
     startBatchDownload,
     startDownload,
+    unfollowArtist,
 } from '@/api/discovery';
 import { deleteAlbumFromLibrary } from '@/api/library';
+import { meQueryOptions } from '@/api/auth';
 import { AlbumIcon, ArtistIcon, TrackIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { CoverArt } from '@/components/library/coverArt';
@@ -101,7 +105,26 @@ function RouteComponent() {
 
 function ArtistHeader() {
     const params = Route.useParams();
+    const qc = useQueryClient();
     const { data: artist } = useSuspenseQuery(artistQueryOptions(params.artist));
+    const { data: followed = [] } = useQuery(followedArtistsQueryOptions());
+
+    const isFollowed = artist.followed || followed.some(
+        (f) => f.name.toLowerCase() === params.artist.toLowerCase()
+    );
+
+    const followMutation = useMutation<void, Error, void>({
+        mutationFn: async () => {
+            if (isFollowed) {
+                await unfollowArtist(params.artist);
+            } else {
+                await followArtist(params.artist);
+            }
+        },
+        onSuccess: () => {
+            void qc.invalidateQueries({ queryKey: ['followedArtists'] });
+        },
+    });
 
     return (
         <Box
@@ -126,6 +149,18 @@ function ArtistHeader() {
             <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1, lineHeight: 1.2 }}>
                 {artist.artist}
             </Typography>
+
+            {/* Follow toggle */}
+            <Tooltip title={isFollowed ? 'Unfollow' : 'Follow'}>
+                <IconButton
+                    size="small"
+                    onClick={() => followMutation.mutate()}
+                    disabled={followMutation.isPending}
+                    sx={{ opacity: isFollowed ? 1 : 0.4, '&:hover': { opacity: 1 } }}
+                >
+                    {isFollowed ? <Star size={15} fill="currentColor" /> : <StarOff size={15} />}
+                </IconButton>
+            </Tooltip>
 
             {/* Stats */}
             <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
@@ -697,6 +732,27 @@ function asNumber(value: unknown): number | null {
     return null;
 }
 
+const LOSSLESS_CONTAINERS = new Set(['FLAC', 'ALAC', 'WAV', 'AIFF', 'PCM']);
+
+const TIER_HIGH_KBPS: Record<string, number> = { mp3: 320, opus: 192, m4a: 256, aac: 256, ogg: 192, vorbis: 192 };
+const TIER_MED_KBPS:  Record<string, number> = { mp3: 160, opus:  96, m4a:  96, aac:  96, ogg:  96, vorbis:  96 };
+
+function resultTier(container: string, kbps: number | null): string {
+    const c = container.toLowerCase().replace('.', '');
+    if (LOSSLESS_CONTAINERS.has(c.toUpperCase())) return 'flac';
+    if (kbps === null) return 'high';
+    if (kbps >= (TIER_HIGH_KBPS[c] ?? 192)) return 'high';
+    if (kbps >= (TIER_MED_KBPS[c]  ??  96)) return 'medium';
+    return 'low';
+}
+
+const QUALITY_TIER_CHIPS = [
+    { id: 'flac',   label: 'FLAC'       },
+    { id: 'high',   label: 'High Lossy' },
+    { id: 'medium', label: 'Med. Lossy' },
+    { id: 'low',    label: 'Low Lossy'  },
+] as const;
+
 function deemixDetailsToQuality(details: Record<string, unknown>): DownloadQuality {
     const container = String(details.container ?? '').toLowerCase();
     const kbps = typeof details.kbps === 'number' ? details.kbps : null;
@@ -738,13 +794,22 @@ function queueMatchColor(queueLength: number | null) {
     return 'error.main';
 }
 
-function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string }) {
+function DownloadButton({ album, artist, disabled: externalDisabled }: { album: MissingAlbum; artist: string; disabled?: boolean }) {
     const deezerId = album.mb_releasegroupid?.startsWith('deezer:')
         ? album.mb_releasegroupid.slice(7)
         : undefined;
     const releaseId = !deezerId ? (album.mb_releasegroupid ?? undefined) : undefined;
     const tracklistReleaseId = album.mb_releasegroupid ?? (deezerId ? `deezer:${deezerId}` : undefined);
     const expectedTrackCount = useExpectedTrackCount(album);
+    const { data: me } = useQuery(meQueryOptions());
+    const allowedTiers = useMemo(() => {
+        const ALL_TIERS = ['flac', 'high', 'medium', 'low'];
+        const startIdx: Record<string, number> = {
+            flac: 0, high_lossy: 1, med_lossy: 2, low_lossy: 3,
+        };
+        const idx = startIdx[me?.max_quality ?? 'flac'] ?? 0;
+        return new Set(ALL_TIERS.slice(idx));
+    }, [me?.max_quality]);
     const [jobId, setJobId] = useState<string | null>(null);
     const [open, setOpen] = useState(false);
     const { data: expectedTracks = [] } = useQuery({
@@ -761,7 +826,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     const [errorProviders, setErrorProviders] = useState<Set<string>>(new Set());
     const [providerResultCount, setProviderResultCount] = useState<Partial<Record<string, number>>>({});
     const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
-    const [selectedQualities, setSelectedQualities] = useState<Set<string>>(new Set(['FLAC']));
+    const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set(['flac']));
     const [retryTrigger, setRetryTrigger] = useState<{ provider: 'slskd' | 'deemix' | 'squidwtf'; cycle: number } | null>(null);
     const searchAbortRef = useRef<AbortController[] | null>(null);
 
@@ -811,7 +876,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
         setErrorProviders(new Set());
         setProviderResultCount({});
         setHiddenProviders(new Set());
-        setSelectedQualities(new Set(['FLAC']));
+        setSelectedTiers(new Set([[...allowedTiers][0] ?? 'flac']));
         setSlskdLoading(true);
         setDeemixLoading(true);
         setSquidwtfLoading(true);
@@ -923,27 +988,19 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     const suggestionLoading = slskdLoading || deemixLoading || squidwtfLoading;
     const suggestionError = suggestionErrors.join(' | ');
 
-    const availableQualities = useMemo(() => {
-        const set = new Set<string>();
-        for (const c of suggestionChoices) {
-            const q = c.provider === 'slskd'
-                ? String(c.details.extension ?? '').toUpperCase().replace('.', '')
-                : String(c.details.container ?? '').toUpperCase();
-            if (q) set.add(q);
-        }
-        return [...set].sort();
-    }, [suggestionChoices]);
-
     const visibleChoices = useMemo(() => suggestionChoices.filter((c) => {
         if (hiddenProviders.has(c.provider)) return false;
-        if (selectedQualities.size > 0) {
-            const q = c.provider === 'slskd'
-                ? String(c.details.extension ?? '').toUpperCase().replace('.', '')
-                : String(c.details.container ?? '').toUpperCase();
-            if (!selectedQualities.has(q)) return false;
+        {
+            const container = c.provider === 'slskd'
+                ? String(c.details.extension ?? '')
+                : String(c.details.container ?? '');
+            const kbps = c.provider === 'slskd'
+                ? asNumber(c.details.meanAudioBitrateKbps)
+                : asNumber(c.details.kbps);
+            if (!selectedTiers.has(resultTier(container, kbps))) return false;
         }
         return true;
-    }), [suggestionChoices, hiddenProviders, selectedQualities]);
+    }), [suggestionChoices, hiddenProviders, selectedTiers]);
 
     const mutation = useMutation({
         mutationFn: async (choice: DownloadSuggestion) => {
@@ -1031,9 +1088,11 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
     if (currentJob?.error) detailLines.push(`error: ${currentJob.error}`);
     if (currentJob?.output_path) detailLines.push(`dest: ${currentJob.output_path}`);
 
-    const tooltipTitle = mutation.isError
-        ? `Error: ${(mutation.error as Error)?.message ?? 'unknown'}`
-        : 'Choose best result';
+    const tooltipTitle = externalDisabled
+        ? 'Download permission required'
+        : mutation.isError
+          ? `Error: ${(mutation.error as Error)?.message ?? 'unknown'}`
+          : 'Choose best result';
 
     const iconColor =
         status === 'done' ? 'success' : status === 'error' ? 'error' : status ? 'warning' : 'default';
@@ -1061,7 +1120,7 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                         variant={status === 'done' ? 'contained' : 'outlined'}
                         color={status === 'done' ? 'success' : status === 'error' ? 'error' : 'primary'}
                         onClick={openDialog}
-                        disabled={mutation.isPending || status === 'pending' || status === 'downloading'}
+                        disabled={externalDisabled || mutation.isPending || status === 'pending' || status === 'downloading'}
                         sx={{
                             minWidth: 0,
                             height: 28,
@@ -1137,23 +1196,27 @@ function DownloadButton({ album, artist }: { album: MissingAlbum; artist: string
                             );
                         })}
                         <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
-                            {availableQualities.map((q: string) => {
-                                const selected = selectedQualities.has(q);
-                                const qColor = q === 'FLAC' ? 'info' : q === 'MP3' ? 'warning' : 'default';
+                            {QUALITY_TIER_CHIPS.map(({ id, label }) => {
+                                const allowed = allowedTiers.has(id);
+                                const on = selectedTiers.has(id);
                                 return (
-                                <Chip
-                                    key={q}
-                                    label={q}
-                                    size="small"
-                                    variant={selected ? 'filled' : 'outlined'}
-                                    color={selected ? qColor : 'default'}
-                                    onClick={() => setSelectedQualities((prev: Set<string>) => {
-                                        const next = new Set(prev);
-                                        if (next.has(q)) next.delete(q); else next.add(q);
-                                        return next;
-                                    })}
-                                    sx={{ cursor: 'pointer', opacity: selected ? 1 : 0.5 }}
-                                />
+                                <Tooltip key={id} title={!allowed ? `Limité par max_quality (${me?.max_quality ?? ''})` : ''} placement="top">
+                                    <span>
+                                    <Chip
+                                        label={label}
+                                        size="small"
+                                        variant={on && allowed ? 'filled' : 'outlined'}
+                                        color={on && allowed ? 'info' : 'default'}
+                                        disabled={!allowed}
+                                        onClick={allowed ? () => setSelectedTiers((prev: Set<string>) => {
+                                            const next = new Set(prev);
+                                            if (next.has(id)) next.delete(id); else next.add(id);
+                                            return next;
+                                        }) : undefined}
+                                        sx={{ cursor: allowed ? 'pointer' : 'default', height: 22, fontSize: '0.65rem', opacity: (on && allowed) ? 1 : 0.5 }}
+                                    />
+                                    </span>
+                                </Tooltip>
                                 );
                             })}
                         </Box>
@@ -1453,6 +1516,22 @@ function MissingAlbumsViewer({
         new Set(['flac', 'high', 'medium', 'low'])
     );
 
+    const { data: me } = useQuery(meQueryOptions());
+    const canManualDownload = me?.can_manual_download ?? true;
+    const canAutoDownload = me?.can_auto_download ?? true;
+    const canDelete = me?.can_delete ?? true;
+    const canRetag = me?.can_retag ?? true;
+    // flac = ceiling (best quality allowed) → all tiers below are also allowed
+    // low_lossy = only low quality allowed
+    const allowedTiers = useMemo(() => {
+        const ALL_TIERS = ['flac', 'high', 'medium', 'low'];
+        const startIdx: Record<string, number> = {
+            flac: 0, high_lossy: 1, med_lossy: 2, low_lossy: 3,
+        };
+        const idx = startIdx[me?.max_quality ?? 'flac'] ?? 0;
+        return new Set(ALL_TIERS.slice(idx));
+    }, [me?.max_quality]);
+
     // Ordered quality tokens sent to backend: config order, filtered to checked tiers.
     const selectedQualities = useMemo(() => {
         // Per-codec transparency thresholds (kbps).
@@ -1467,8 +1546,8 @@ function MissingAlbumsViewer({
             if (kbps >= (MED[container]  ??  96)) return 'medium';
             return 'low';
         };
-        return qualityPriority.filter((q: string) => batchTiers.has(tierOf(q)));
-    }, [qualityPriority, batchTiers]);
+        return qualityPriority.filter((q: string) => batchTiers.has(tierOf(q)) && allowedTiers.has(tierOf(q)));
+    }, [qualityPriority, batchTiers, allowedTiers]);
 
     const albumEntries = useMemo(() => {
         return albums.map((album, idx) => ({
@@ -1572,7 +1651,7 @@ function MissingAlbumsViewer({
         <>
         <Box sx={{ overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
             {/* Batch download controls */}
-            <Box
+            {canAutoDownload && <Box
                 sx={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1596,7 +1675,8 @@ function MissingAlbumsViewer({
                             size="small"
                             checked={allSelected}
                             indeterminate={selectedIds.size > 0 && !allSelected}
-                            onChange={toggleAll}
+                            onChange={canAutoDownload ? toggleAll : undefined}
+                            disabled={!canAutoDownload}
                             sx={{ p: 0.5 }}
                         />
                     </Tooltip>
@@ -1606,6 +1686,7 @@ function MissingAlbumsViewer({
                         disableElevation
                         size="small"
                         disabled={
+                            !canAutoDownload ||
                             selectedCount === 0 ||
                             batchMutation.isPending ||
                             batchProviders.size === 0 ||
@@ -1670,20 +1751,24 @@ function MissingAlbumsViewer({
                             ] as const
                         ).map(({ id, label, desc }) => {
                             const on = batchTiers.has(id);
+                            const tierAllowed = allowedTiers.has(id);
                             return (
-                                <Tooltip key={id} title={desc} placement="top">
+                                <Tooltip key={id} title={tierAllowed ? desc : `Limité par max_quality (${me?.max_quality ?? ''})`} placement="top">
+                                    <span>
                                     <Chip
                                         label={label}
                                         size="small"
-                                        variant={on ? 'filled' : 'outlined'}
-                                        color={on ? 'info' : 'default'}
-                                        onClick={() => setBatchTiers((prev: Set<string>) => {
+                                        variant={on && tierAllowed ? 'filled' : 'outlined'}
+                                        color={on && tierAllowed ? 'info' : 'default'}
+                                        disabled={!tierAllowed}
+                                        onClick={tierAllowed ? () => setBatchTiers((prev: Set<string>) => {
                                             const next = new Set(prev);
                                             on ? next.delete(id) : next.add(id);
                                             return next;
-                                        })}
-                                        sx={{ cursor: 'pointer', height: 22, fontSize: '0.65rem' }}
+                                        }) : undefined}
+                                        sx={{ cursor: tierAllowed ? 'pointer' : 'default', height: 22, fontSize: '0.65rem' }}
                                     />
+                                    </span>
                                 </Tooltip>
                             );
                         })}
@@ -1701,7 +1786,7 @@ function MissingAlbumsViewer({
                     </Typography>
                 )}
 
-            </Box>
+            </Box>}
             {orderedTypes.map((type) => (
                 <Box key={type} sx={{ mb: 3 }}>
                     {(() => {
@@ -1732,7 +1817,8 @@ function MissingAlbumsViewer({
                                         size="small"
                                         checked={allTypeSelected}
                                         indeterminate={typeIndeterminate}
-                                        onChange={() => {
+                                        disabled={!canAutoDownload}
+                                        onChange={canAutoDownload ? () => {
                                             setSelectedIds((prev) => {
                                                 const next = new Set(prev);
                                                 if (allTypeSelected) {
@@ -1742,7 +1828,7 @@ function MissingAlbumsViewer({
                                                 }
                                                 return next;
                                             });
-                                        }}
+                                        } : undefined}
                                     />
                                 </Tooltip>
                                 <Typography variant="subtitle2" color="text.secondary">
@@ -1828,14 +1914,15 @@ function MissingAlbumsViewer({
                                                     <Checkbox
                                                         size="small"
                                                         checked={isSelected}
-                                                        onChange={() => {
+                                                        disabled={!canAutoDownload}
+                                                        onChange={canAutoDownload ? () => {
                                                             setSelectedIds((prev: Set<string>) => {
                                                                 const next = new Set(prev);
                                                                 if (next.has(rowId)) next.delete(rowId);
                                                                 else next.add(rowId);
                                                                 return next;
                                                             });
-                                                        }}
+                                                        } : undefined}
                                                     />
                                                 )}
                                             </TableCell>
@@ -1930,15 +2017,15 @@ function MissingAlbumsViewer({
                                                 <Box sx={{ display: 'flex', justifyContent: 'center', gap: 0.25 }}>
                                                     {isLibrary ? (
                                                         <>
-                                                            <AlbumEditButton albumId={album.library_album_id as number} />
-                                                            <Tooltip title="Remove from library and delete files">
+                                                            <AlbumEditButton albumId={album.library_album_id as number} disabled={!canRetag} />
+                                                            <Tooltip title={canDelete ? 'Remove from library and delete files' : 'Delete permission required'}>
                                                                 <span>
                                                                     <IconButton
                                                                         size="small"
                                                                         color="error"
-                                                                        onClick={() => setPendingDelete(album)}
-                                                                        disabled={deleteMutation.isPending}
-                                                                        sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
+                                                                        onClick={() => canDelete && setPendingDelete(album)}
+                                                                        disabled={!canDelete || deleteMutation.isPending}
+                                                                        sx={{ opacity: canDelete ? 0.65 : 0.25, '&:hover': { opacity: canDelete ? 1 : 0.25 } }}
                                                                     >
                                                                         <Trash2 size={14} />
                                                                     </IconButton>
@@ -1946,7 +2033,7 @@ function MissingAlbumsViewer({
                                                             </Tooltip>
                                                         </>
                                                     ) : (
-                                                        <DownloadButton album={album} artist={artist} />
+                                                        <DownloadButton album={album} artist={artist} disabled={!canManualDownload} />
                                                     )}
                                                 </Box>
                                             </TableCell>
@@ -1970,7 +2057,7 @@ function MissingAlbumsViewer({
         </Box>
 
         {/* Delete confirmation dialog */}
-        <Dialog open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} maxWidth="xs" fullWidth>
+        <Dialog open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} maxWidth="xs">
             <DialogTitle>Remove album?</DialogTitle>
             <DialogContent>
                 <Typography variant="body2">

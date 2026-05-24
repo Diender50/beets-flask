@@ -10,9 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VersionRouteImport } from './routes/version'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as SessiondraftIndexRouteImport } from './routes/sessiondraft/index'
 import { Route as InboxIndexRouteImport } from './routes/inbox/index'
 import { Route as DebugIndexRouteImport } from './routes/debug/index'
+import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as FrontpageIndexRouteImport } from './routes/_frontpage/index'
 import { Route as LibraryDiscoveryRouteImport } from './routes/library/discovery'
 import { Route as DebugSortable_multiRouteImport } from './routes/debug/sortable_multi'
@@ -20,6 +22,7 @@ import { Route as DebugSortableRouteImport } from './routes/debug/sortable'
 import { Route as DebugJobsRouteImport } from './routes/debug/jobs'
 import { Route as DebugErrorRouteImport } from './routes/debug/error'
 import { Route as DebugAudioRouteImport } from './routes/debug/audio'
+import { Route as AccountChangePasswordRouteImport } from './routes/account/change-password'
 import { Route as LibraryBrowseIndexRouteImport } from './routes/library/browse/index'
 import { Route as LibraryBrowseAlbumsRouteImport } from './routes/library/browse/albums'
 import { Route as InboxTaskTaskIdRouteImport } from './routes/inbox/task.$taskId'
@@ -45,6 +48,11 @@ const VersionRoute = VersionRouteImport.update({
   path: '/version',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessiondraftIndexRoute = SessiondraftIndexRouteImport.update({
   id: '/sessiondraft/',
   path: '/sessiondraft/',
@@ -58,6 +66,11 @@ const InboxIndexRoute = InboxIndexRouteImport.update({
 const DebugIndexRoute = DebugIndexRouteImport.update({
   id: '/debug/',
   path: '/debug/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/admin/',
+  path: '/admin/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FrontpageIndexRoute = FrontpageIndexRouteImport.update({
@@ -93,6 +106,11 @@ const DebugErrorRoute = DebugErrorRouteImport.update({
 const DebugAudioRoute = DebugAudioRouteImport.update({
   id: '/debug/audio',
   path: '/debug/audio',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountChangePasswordRoute = AccountChangePasswordRouteImport.update({
+  id: '/account/change-password',
+  path: '/account/change-password',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LibraryBrowseIndexRoute = LibraryBrowseIndexRouteImport.update({
@@ -203,7 +221,9 @@ const LibraryresourcesAlbumAlbumIdBeetsdataRoute =
   } as any)
 
 export interface FileRoutesByFullPath {
+  '/login': typeof LoginRoute
   '/version': typeof VersionRoute
+  '/account/change-password': typeof AccountChangePasswordRoute
   '/debug/audio': typeof DebugAudioRoute
   '/debug/error': typeof DebugErrorRoute
   '/debug/jobs': typeof DebugJobsRoute
@@ -211,6 +231,7 @@ export interface FileRoutesByFullPath {
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
   '/': typeof FrontpageIndexRoute
+  '/admin': typeof AdminIndexRoute
   '/debug': typeof DebugIndexRoute
   '/inbox': typeof InboxIndexRoute
   '/sessiondraft': typeof SessiondraftIndexRoute
@@ -235,7 +256,9 @@ export interface FileRoutesByFullPath {
   '/library/item/$itemId/': typeof LibraryresourcesItemItemIdIndexRoute
 }
 export interface FileRoutesByTo {
+  '/login': typeof LoginRoute
   '/version': typeof VersionRoute
+  '/account/change-password': typeof AccountChangePasswordRoute
   '/debug/audio': typeof DebugAudioRoute
   '/debug/error': typeof DebugErrorRoute
   '/debug/jobs': typeof DebugJobsRoute
@@ -243,6 +266,7 @@ export interface FileRoutesByTo {
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
   '/': typeof FrontpageIndexRoute
+  '/admin': typeof AdminIndexRoute
   '/debug': typeof DebugIndexRoute
   '/inbox': typeof InboxIndexRoute
   '/sessiondraft': typeof SessiondraftIndexRoute
@@ -265,7 +289,9 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/login': typeof LoginRoute
   '/version': typeof VersionRoute
+  '/account/change-password': typeof AccountChangePasswordRoute
   '/debug/audio': typeof DebugAudioRoute
   '/debug/error': typeof DebugErrorRoute
   '/debug/jobs': typeof DebugJobsRoute
@@ -273,6 +299,7 @@ export interface FileRoutesById {
   '/debug/sortable_multi': typeof DebugSortable_multiRoute
   '/library/discovery': typeof LibraryDiscoveryRoute
   '/_frontpage/': typeof FrontpageIndexRoute
+  '/admin/': typeof AdminIndexRoute
   '/debug/': typeof DebugIndexRoute
   '/inbox/': typeof InboxIndexRoute
   '/sessiondraft/': typeof SessiondraftIndexRoute
@@ -299,7 +326,9 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/login'
     | '/version'
+    | '/account/change-password'
     | '/debug/audio'
     | '/debug/error'
     | '/debug/jobs'
@@ -307,6 +336,7 @@ export interface FileRouteTypes {
     | '/debug/sortable_multi'
     | '/library/discovery'
     | '/'
+    | '/admin'
     | '/debug'
     | '/inbox'
     | '/sessiondraft'
@@ -331,7 +361,9 @@ export interface FileRouteTypes {
     | '/library/item/$itemId/'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/login'
     | '/version'
+    | '/account/change-password'
     | '/debug/audio'
     | '/debug/error'
     | '/debug/jobs'
@@ -339,6 +371,7 @@ export interface FileRouteTypes {
     | '/debug/sortable_multi'
     | '/library/discovery'
     | '/'
+    | '/admin'
     | '/debug'
     | '/inbox'
     | '/sessiondraft'
@@ -360,7 +393,9 @@ export interface FileRouteTypes {
     | '/library/item/$itemId'
   id:
     | '__root__'
+    | '/login'
     | '/version'
+    | '/account/change-password'
     | '/debug/audio'
     | '/debug/error'
     | '/debug/jobs'
@@ -368,6 +403,7 @@ export interface FileRouteTypes {
     | '/debug/sortable_multi'
     | '/library/discovery'
     | '/_frontpage/'
+    | '/admin/'
     | '/debug/'
     | '/inbox/'
     | '/sessiondraft/'
@@ -393,7 +429,9 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  LoginRoute: typeof LoginRoute
   VersionRoute: typeof VersionRoute
+  AccountChangePasswordRoute: typeof AccountChangePasswordRoute
   DebugAudioRoute: typeof DebugAudioRoute
   DebugErrorRoute: typeof DebugErrorRoute
   DebugJobsRoute: typeof DebugJobsRoute
@@ -401,6 +439,7 @@ export interface RootRouteChildren {
   DebugSortable_multiRoute: typeof DebugSortable_multiRoute
   LibraryDiscoveryRoute: typeof LibraryDiscoveryRoute
   FrontpageIndexRoute: typeof FrontpageIndexRoute
+  AdminIndexRoute: typeof AdminIndexRoute
   DebugIndexRoute: typeof DebugIndexRoute
   InboxIndexRoute: typeof InboxIndexRoute
   SessiondraftIndexRoute: typeof SessiondraftIndexRoute
@@ -426,6 +465,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VersionRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessiondraft/': {
       id: '/sessiondraft/'
       path: '/sessiondraft'
@@ -445,6 +491,13 @@ declare module '@tanstack/react-router' {
       path: '/debug'
       fullPath: '/debug'
       preLoaderRoute: typeof DebugIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/': {
+      id: '/admin/'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_frontpage/': {
@@ -494,6 +547,13 @@ declare module '@tanstack/react-router' {
       path: '/debug/audio'
       fullPath: '/debug/audio'
       preLoaderRoute: typeof DebugAudioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account/change-password': {
+      id: '/account/change-password'
+      path: '/account/change-password'
+      fullPath: '/account/change-password'
+      preLoaderRoute: typeof AccountChangePasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/library/browse/': {
@@ -690,7 +750,9 @@ const LibraryresourcesItemItemIdRouteRouteWithChildren =
   )
 
 const rootRouteChildren: RootRouteChildren = {
+  LoginRoute: LoginRoute,
   VersionRoute: VersionRoute,
+  AccountChangePasswordRoute: AccountChangePasswordRoute,
   DebugAudioRoute: DebugAudioRoute,
   DebugErrorRoute: DebugErrorRoute,
   DebugJobsRoute: DebugJobsRoute,
@@ -698,6 +760,7 @@ const rootRouteChildren: RootRouteChildren = {
   DebugSortable_multiRoute: DebugSortable_multiRoute,
   LibraryDiscoveryRoute: LibraryDiscoveryRoute,
   FrontpageIndexRoute: FrontpageIndexRoute,
+  AdminIndexRoute: AdminIndexRoute,
   DebugIndexRoute: DebugIndexRoute,
   InboxIndexRoute: InboxIndexRoute,
   SessiondraftIndexRoute: SessiondraftIndexRoute,

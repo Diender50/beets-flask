@@ -132,9 +132,21 @@ async def delete(params: dict[str, Any] = Body(default_factory=dict)) -> dict:
 
     for f in folders:
         if isinstance(f, Archive):
-            os.remove(f.full_path)
+            try:
+                os.remove(f.full_path)
+            except PermissionError as e:
+                raise InvalidUsageException(
+                    f"Permission denied when deleting {f.full_path}: {e}. "
+                    "Check that the container user owns the inbox files."
+                )
         elif isinstance(f, Folder):
-            shutil.rmtree(f.full_path)
+            try:
+                shutil.rmtree(f.full_path)
+            except PermissionError as e:
+                raise InvalidUsageException(
+                    f"Permission denied when deleting {f.full_path}: {e}. "
+                    "Check that the container user owns the inbox files."
+                )
         else:
             raise InvalidUsageException(f"Cannot delete object of type {type(f)} at {f.full_path}")
 

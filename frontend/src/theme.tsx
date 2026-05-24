@@ -115,6 +115,11 @@ const darkTheme = createTheme({
             default: '#0C0E11',
             paper: '#141618',
         },
+        error: {
+            main: '#FF3B3B',
+            light: '#FF6B6B',
+            dark: '#CC0000',
+        },
         diffs: {
             // added: "#a4bf8c",
             added: '#A0D582',

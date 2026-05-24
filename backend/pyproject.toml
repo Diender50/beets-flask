@@ -44,6 +44,8 @@ dependencies = [
     "pandas",
     "typing_extensions",
     "pytz",
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
 ]
 
 [project.optional-dependencies]

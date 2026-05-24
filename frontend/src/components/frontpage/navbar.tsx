@@ -1,15 +1,40 @@
 import {
     Compass,
     Inbox,
+    KeyRound,
     Library,
+    LogOut,
+    Settings,
     Users,
+    UserRound,
 } from 'lucide-react';
-import { MouseEvent, ReactElement, useRef } from 'react';
-import { Box, BoxProps, darken, Typography, useTheme } from '@mui/material';
+import { MouseEvent, ReactElement, useRef, useState } from 'react';
+import {
+    Box,
+    BoxProps,
+    darken,
+    Divider,
+    IconButton,
+    ListItemIcon,
+    Menu,
+    MenuItem,
+    Tooltip,
+    Typography,
+    useTheme,
+} from '@mui/material';
 import { styled } from '@mui/material/styles';
 import Tab, { tabClasses, TabProps } from '@mui/material/Tab';
 import Tabs, { tabsClasses } from '@mui/material/Tabs';
-import { createLink, LinkProps, useRouterState } from '@tanstack/react-router';
+import { useQuery } from '@tanstack/react-query';
+import {
+    createLink,
+    LinkProps,
+    useNavigate,
+    useRouterState,
+} from '@tanstack/react-router';
+
+import { clearToken, meQueryOptions } from '@/api/auth';
+import { queryClient } from '@/api/common';
 
 export const NAVBAR_HEIGHT = {
     desktop: '48px',
@@ -195,6 +220,77 @@ function NavTabs() {
     );
 }
 
+function UserMenu() {
+    const navigate = useNavigate();
+    const { data: user } = useQuery(meQueryOptions());
+    const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+
+    function handleLogout() {
+        clearToken();
+        void queryClient.clear();
+        void navigate({ to: '/login' });
+    }
+
+    return (
+        <>
+            <Tooltip title={user?.username ?? 'Account'}>
+                <IconButton
+                    size="small"
+                    onClick={(e) => setAnchor(e.currentTarget)}
+                    sx={{ ml: 'auto', mr: 1 }}
+                >
+                    <UserRound size={18} />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                anchorEl={anchor}
+                open={Boolean(anchor)}
+                onClose={() => setAnchor(null)}
+                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+            >
+                <MenuItem disabled sx={{ opacity: '1 !important' }}>
+                    <Typography variant="caption" color="text.secondary">
+                        {user?.username}
+                    </Typography>
+                </MenuItem>
+                <Divider />
+                <MenuItem
+                    onClick={() => {
+                        setAnchor(null);
+                        void navigate({ to: '/account/change-password' });
+                    }}
+                >
+                    <ListItemIcon>
+                        <KeyRound size={16} />
+                    </ListItemIcon>
+                    Change password
+                </MenuItem>
+                {user?.is_admin && (
+                    <MenuItem
+                        onClick={() => {
+                            setAnchor(null);
+                            void navigate({ to: '/admin' });
+                        }}
+                    >
+                        <ListItemIcon>
+                            <Settings size={16} />
+                        </ListItemIcon>
+                        Admin
+                    </MenuItem>
+                )}
+                <Divider />
+                <MenuItem onClick={handleLogout}>
+                    <ListItemIcon>
+                        <LogOut size={16} />
+                    </ListItemIcon>
+                    Sign out
+                </MenuItem>
+            </Menu>
+        </>
+    );
+}
+
 /** Navbar component
  *
  * on desktop: fixed to the top
@@ -220,11 +316,19 @@ export default function NavBar(props: BoxProps) {
                     borderBottom: '1px solid',
                     borderColor: 'divider',
                     height: NAVBAR_HEIGHT.desktop,
+                    alignItems: 'center',
                 },
             })}
             {...props}
         >
             <NavTabs />
+            <Box
+                sx={(theme) => ({
+                    [theme.breakpoints.down('laptop')]: { display: 'none' },
+                })}
+            >
+                <UserMenu />
+            </Box>
         </Box>
     );
 }

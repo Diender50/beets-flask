@@ -5,7 +5,7 @@ import re
 import unicodedata
 import urllib.parse
 import urllib.request
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import musicbrainzngs
 import pandas as pd
@@ -24,7 +24,7 @@ from beets_flask.library_cache import (
     set_json_cache,
 )
 from beets_flask.logger import log
-from beets_flask.server.dependencies import BeetsLib
+from beets_flask.server.dependencies import BeetsLib, CurrentUser
 from beets_flask.server.exceptions import NotFoundException
 
 ARTIST_SEPARATORS: list[str] = get_config()["gui"]["library"][
@@ -1079,16 +1079,16 @@ async def missing_albums_by_artist(artist_name: str, lib: BeetsLib, refresh: boo
 
 
 @router.get("/artists/{artist_name:path}")
-async def artist_by_name(artist_name: str, lib: BeetsLib) -> Response:
-    return await _get_artists(artist_name, lib)
+async def artist_by_name(artist_name: str, lib: BeetsLib, user: CurrentUser) -> Response:
+    return await _get_artists(artist_name, lib, user.id)
 
 
 @router.get("/artists")
-async def all_artists(lib: BeetsLib) -> Response:
-    return await _get_artists(None, lib)
+async def all_artists(lib: BeetsLib, user: CurrentUser) -> Response:
+    return await _get_artists(None, lib, user.id)
 
 
-async def _get_artists(artist_name: str | None, lib) -> Response:
+async def _get_artists(artist_name: str | None, lib, user_id: str) -> Response:
     import unicodedata
 
     from beets_flask.library_cache import get_missing_count_map
@@ -1130,7 +1130,7 @@ async def _get_artists(artist_name: str | None, lib) -> Response:
         if artists.empty:
             from beets_flask.discovery.followed_artists import is_followed
 
-            if is_followed(artist_name):
+            if is_followed(user_id, artist_name):
                 stub = {
                     "artist": artist_name,
                     "album_count": 0,

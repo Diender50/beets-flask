@@ -25,9 +25,22 @@ export function customizeFetch() {
             input = input.url;
         }
 
-        // Local requests get a prefix
+        // Local requests get a prefix and auth header
         if (!input.startsWith('/')) {
             return originalFetch(input, init);
+        }
+
+        // Inject Bearer token for all api requests
+        const { getToken, clearToken } = await import('./auth');
+        const token = getToken();
+        if (token) {
+            init = {
+                ...init,
+                headers: {
+                    ...init?.headers,
+                    Authorization: `Bearer ${token}`,
+                },
+            };
         }
 
         // Retry only idempotent requests for transient startup connection races.
@@ -60,6 +73,14 @@ export function customizeFetch() {
 
         if (!response) {
             throw new HTTPError('Request failed without response');
+        }
+
+        if (response.status === 401 && !input.includes('/auth/login') && !input.includes('/auth/register')) {
+            const { clearToken } = await import('./auth');
+            clearToken();
+            if (window.location.pathname !== '/login') {
+                window.location.href = '/login';
+            }
         }
 
         if (!response.ok) {

@@ -139,23 +139,26 @@ const FIELD_SX = {
 
 // ── Public: edit button ───────────────────────────────────────────────────────
 
-export function AlbumEditButton({ albumId }: { albumId: number }) {
+export function AlbumEditButton({ albumId, disabled }: { albumId: number; disabled?: boolean }) {
     const [open, setOpen] = useState(false);
 
     return (
         <>
-            <Tooltip title="Edit tags">
+            <Tooltip title={disabled ? 'Retag permission required' : 'Edit tags'}>
+                <span>
                 <IconButton
                     size="small"
+                    disabled={disabled}
                     onClick={(e) => {
                         e.stopPropagation();
                         setOpen(true);
                     }}
-                    sx={{ opacity: 0.5, '&:hover': { opacity: 1 }, padding: 0.5 }}
+                    sx={{ opacity: disabled ? 0.3 : 0.5, '&:hover': { opacity: disabled ? 0.3 : 1 }, padding: 0.5 }}
                     aria-label="Edit album tags"
                 >
                     <PencilIcon size={14} />
                 </IconButton>
+                </span>
             </Tooltip>
 
             {open && (

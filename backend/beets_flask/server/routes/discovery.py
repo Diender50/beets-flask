@@ -8,36 +8,34 @@ from typing import Any
 from urllib.parse import quote
 
 import aiohttp
-
-from beets_flask.config import get_config
 from fastapi import APIRouter, Body, HTTPException
 
+from beets_flask.config import get_config
 from beets_flask.discovery.download import (
     create_download_job,
     delete_download_job,
     get_all_download_jobs,
     get_download_job,
-    run_auto_download,
     run_deemix_download,
     run_slskd_download,
     run_squidwtf_download,
 )
-from beets_flask.discovery.providers import deemix as deemix_provider
-from beets_flask.discovery.providers import slskd as slskd_provider
-from beets_flask.discovery.providers import squidwtf as squidwtf_provider
 from beets_flask.discovery.followed_artists import (
     follow_artist,
     get_followed_artists,
     is_followed,
     unfollow_artist,
 )
+from beets_flask.discovery.providers import deemix as deemix_provider
+from beets_flask.discovery.providers import slskd as slskd_provider
+from beets_flask.discovery.providers import squidwtf as squidwtf_provider
 from beets_flask.library_cache import (
     get_missing_count_map,
     invalidate_missing_cache_for_string,
     normalize_artist_key,
 )
 from beets_flask.logger import log
-
+from beets_flask.server.dependencies import CurrentUser
 
 # ─── Helpers (inlined from server/routes/discovery) ──────────────────────────
 
@@ -596,7 +594,7 @@ async def get_quality_priority() -> dict:
 
 
 @router.get("/search/artists")
-async def search_artists(q: str = "") -> list:
+async def search_artists(user: CurrentUser, q: str = "") -> list:
     if not q.strip():
         raise HTTPException(status_code=400, detail="q is required")
 
@@ -619,15 +617,15 @@ async def search_artists(q: str = "") -> list:
             "disambiguation": a.get("disambiguation", ""),
             "country": a.get("country", ""),
             "score": a.get("score", 0),
-            "followed": bool(is_followed(a.get("name", ""))),
+            "followed": bool(is_followed(user.id, a.get("name", ""))),
         }
         for a in data.get("artists", [])
     ]
 
 
 @router.get("/artists")
-async def list_followed_artists() -> list:
-    artists = get_followed_artists()
+async def list_followed_artists(user: CurrentUser) -> list:
+    artists = get_followed_artists(user.id)
     missing_map = get_missing_count_map()
     for a in artists:
         a["missing_count"] = missing_map.get(normalize_artist_key(a["name"]), 0)
@@ -635,23 +633,26 @@ async def list_followed_artists() -> list:
 
 
 @router.post("/artists", status_code=201)
-async def add_followed_artist(data: dict[str, Any] = Body(default_factory=dict)) -> dict:
+async def add_followed_artist(
+    user: CurrentUser,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict:
     if not data or not str(data.get("name", "")).strip():
         raise HTTPException(status_code=400, detail="name is required")
     name = str(data["name"]).strip()
-    return follow_artist(name)
+    return follow_artist(user.id, name)
 
 
 @router.delete("/artists/{name:path}")
-async def remove_followed_artist(name: str) -> dict:
-    unfollow_artist(name)
+async def remove_followed_artist(name: str, user: CurrentUser) -> dict:
+    unfollow_artist(user.id, name)
     invalidate_missing_cache_for_string(name)
     return {"ok": True}
 
 
 @router.get("/artists/{name:path}/status")
-async def followed_artist_status(name: str) -> dict:
-    return {"name": name, "followed": is_followed(name)}
+async def followed_artist_status(name: str, user: CurrentUser) -> dict:
+    return {"name": name, "followed": is_followed(user.id, name)}
 
 
 # ─── Downloads ────────────────────────────────────────────────────────────────

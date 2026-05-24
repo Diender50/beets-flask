@@ -41,6 +41,14 @@ class NotImportedException(ApiException):
     status_code: int = 409
 
 
+class UnauthorizedException(ApiException):
+    status_code: int = 401
+
+
+class ForbiddenException(ApiException):
+    status_code: int = 403
+
+
 class NoCandidatesFoundException(ApiException):
     status_code: int = 409
 

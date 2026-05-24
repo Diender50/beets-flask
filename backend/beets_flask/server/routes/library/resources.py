@@ -31,10 +31,8 @@ from fastapi import APIRouter
 from beets_flask.config import get_config
 from beets_flask.library_cache import invalidate_missing_cache_for_string
 from beets_flask.logger import log
-from beets_flask.server.exceptions import InvalidUsageException, NotFoundException
-from beets_flask.server.utility import pop_query_param
-from beets_flask.server.dependencies import BeetsLib
-
+from beets_flask.server.dependencies import BeetsLib, require_permission
+from beets_flask.server.exceptions import NotFoundException
 
 T = TypeVar("T", bound=Item | Album)
 
@@ -624,7 +622,12 @@ async def get_album(id: int, lib: BeetsLib, expand: str | None = None, minimal: 
 
 
 @router.delete("/album/{id}")
-async def delete_album(id: int, lib: BeetsLib, delete: str | None = None) -> dict:
+async def delete_album(
+    id: int,
+    lib: BeetsLib,
+    _user: require_permission("can_delete"),
+    delete: str | None = None,
+) -> dict:
     item = lib.get_album(id)
     if not item:
         raise NotFoundException(f"Album with beets_id:'{id}' not found in beets db.")
@@ -706,7 +709,12 @@ async def get_item(id: int, lib: BeetsLib, expand: str | None = None, minimal: s
 
 
 @router.delete("/item/{id}")
-async def delete_item(id: int, lib: BeetsLib, delete: str | None = None) -> dict:
+async def delete_item(
+    id: int,
+    lib: BeetsLib,
+    _user: require_permission("can_delete"),
+    delete: str | None = None,
+) -> dict:
     item = lib.get_item(id)
     if not item:
         raise NotFoundException(f"Item with beets_id:'{id}' not found in beets db.")

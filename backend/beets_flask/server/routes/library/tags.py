@@ -16,15 +16,15 @@ import asyncio
 from typing import Any
 
 import mutagen
-from beets.library import Album, Item
 from beets import util as beets_util
+from beets.library import Album, Item
 from fastapi import APIRouter
 from mutagen._vorbis import VComment
 from pydantic import BaseModel
 
 from beets_flask.config import get_config
 from beets_flask.logger import log
-from beets_flask.server.dependencies import BeetsLib
+from beets_flask.server.dependencies import BeetsLib, require_permission
 from beets_flask.server.exceptions import InvalidUsageException, NotFoundException
 
 router = APIRouter()
@@ -113,6 +113,7 @@ async def update_album_tags(
     album_id: int,
     body: AlbumTagsBody,
     lib: BeetsLib,
+    _user: require_permission("can_retag"),
 ) -> dict[str, Any]:
     if get_config()["gui"]["library"]["readonly"].get(bool):
         raise InvalidUsageException("Library is read-only")
@@ -162,7 +163,20 @@ async def update_album_tags(
                 if track_upd.track is not None:
                     item["track"] = track_upd.track
 
-            item.try_sync(write=True, move=needs_move, with_album=False)
+            # Write tags to file (try_write has its own error handling)
+            item.try_write()
+            item.store()
+
+            # Move file to new path if directory/filename changed
+            if needs_move:
+                try:
+                    item.move(with_album=False)
+                    item.store()
+                except Exception as exc:
+                    log.warning(
+                        f"Could not move item {item.id} "
+                        f"(tags written, rename skipped): {exc}"
+                    )
 
             # For Vorbis files: overwrite with native multi-valued tags,
             # then re-read the file so the DB reflects exactly what's on disk.

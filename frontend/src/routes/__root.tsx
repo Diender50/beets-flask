@@ -2,8 +2,13 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import Box, { BoxProps } from '@mui/material/Box';
 import { QueryClient } from '@tanstack/react-query';
 import { HeadContent } from '@tanstack/react-router';
-import { createRootRouteWithContext, Outlet } from '@tanstack/react-router';
+import {
+    createRootRouteWithContext,
+    Outlet,
+    redirect,
+} from '@tanstack/react-router';
 
+import { getToken } from '@/api/auth';
 import { PageWrapper } from '@/components/common/page';
 import NavBar, { NAVBAR_HEIGHT } from '@/components/frontpage/navbar';
 import { TerminalContextProvider } from '@/components/frontpage/terminal';
@@ -15,6 +20,11 @@ import {
 export const Route = createRootRouteWithContext<{
     queryClient: QueryClient;
 }>()({
+    beforeLoad: ({ location }) => {
+        if (!getToken() && location.pathname !== '/login') {
+            throw redirect({ to: '/login' });
+        }
+    },
     component: RootComponent,
     head: () => ({
         meta: [

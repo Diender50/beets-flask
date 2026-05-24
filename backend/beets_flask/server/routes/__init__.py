@@ -13,6 +13,7 @@ def register_routes(app: FastAPI) -> None:
     )
 
     from .art_preview import router as art_router
+    from .auth import router as auth_router
     from .config import router as config_router
     from .db_models import candidate_router, folder_router, session_router, task_router
     from .discovery import router as discovery_router
@@ -25,7 +26,10 @@ def register_routes(app: FastAPI) -> None:
     from .library.stats import router as stats_router
     from .library.tags import router as tags_router
     from .monitor import router as monitor_router
+    from .users import router as users_router
 
+    app.include_router(auth_router, prefix=_API_PREFIX)
+    app.include_router(users_router, prefix=_API_PREFIX)
     app.include_router(monitor_router, prefix=_API_PREFIX)
     app.include_router(config_router, prefix=_API_PREFIX)
     app.include_router(art_router, prefix=_API_PREFIX)

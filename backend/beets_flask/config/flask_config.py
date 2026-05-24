@@ -34,8 +34,11 @@ class ServerConfig:
     # FIXME: 2025-06-04 likely we only need this in production.
     FRONTEND_DIST_DIR = "../frontend/dist/"
 
-    # Not sure if this is even used!
-    SECRET_KEY = "secret"
+    # Used for JWT signing — override with BEETS_FLASK_SECRET env var in production.
+    SECRET_KEY: str = os.environ.get("BEETS_FLASK_SECRET", "change-me-in-production")
+
+    # JWT token lifetime in hours (default 7 days).
+    JWT_EXPIRY_HOURS: int = int(os.environ.get("BEETS_FLASK_JWT_EXPIRY_HOURS", "168"))
 
     def as_dict(self) -> dict:
         return {

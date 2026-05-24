@@ -35,6 +35,7 @@ import {
     searchArtists,
     unfollowArtist,
 } from '@/api/discovery';
+import { meQueryOptions } from '@/api/auth';
 import { ArtistIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { ArtistsTable } from '@/components/common/browser/artistsTable';
@@ -49,6 +50,8 @@ export const Route = createFileRoute('/library/browse/artists/')({
 function RouteComponent() {
     const { data: libraryArtists } = useSuspenseQuery(artistsQueryOptions());
     const { data: followedArtists = [] } = useQuery(followedArtistsQueryOptions());
+    const { data: me } = useQuery(meQueryOptions());
+    const canAddArtist = me?.can_add_artist ?? true;
 
     const [followDialogOpen, setFollowDialogOpen] = useState(false);
     const [albumArtistOnly, setAlbumArtistOnly] = useState(true);
@@ -98,6 +101,7 @@ function RouteComponent() {
                 albumArtistOnly={albumArtistOnly}
                 onAlbumArtistOnlyChange={setAlbumArtistOnly}
                 onAddArtist={() => setFollowDialogOpen(true)}
+                canAddArtist={canAddArtist}
                 sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}
             />
             <FollowArtistDialog
@@ -115,6 +119,7 @@ function ArtistsListWrapper({
     albumArtistOnly,
     onAlbumArtistOnlyChange,
     onAddArtist,
+    canAddArtist = true,
     ...props
 }: {
     artists: Array<Artist>;
@@ -122,6 +127,7 @@ function ArtistsListWrapper({
     albumArtistOnly: boolean;
     onAlbumArtistOnlyChange: (v: boolean) => void;
     onAddArtist: () => void;
+    canAddArtist?: boolean;
 } & BoxProps) {
     const [filter, setFilter] = useState<string>('');
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -271,12 +277,14 @@ function ArtistsListWrapper({
                 <Typography variant="caption" color="text.disabled">
                     {nArtists}
                 </Typography>
-                <Tooltip title="Follow a new artist">
+                <Tooltip title={canAddArtist ? 'Follow a new artist' : 'Permission required to add new artists'}>
+                    <span>
                     <Button
                         size="small"
                         variant="outlined"
                         startIcon={<UserRoundPlusIcon size={14} />}
-                        onClick={onAddArtist}
+                        onClick={canAddArtist ? onAddArtist : undefined}
+                        disabled={!canAddArtist}
                         sx={(theme) => ({
                             textTransform: 'none',
                             fontSize: 12,
@@ -290,6 +298,7 @@ function ArtistsListWrapper({
                             Follow
                         </Box>
                     </Button>
+                    </span>
                 </Tooltip>
             </Box>
 
