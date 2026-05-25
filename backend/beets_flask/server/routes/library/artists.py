@@ -1256,7 +1256,7 @@ def get_artists_pandas(
     # Split the artist string by the specified separators
     artists: list[str] | None
     if len(ARTIST_SEPARATORS) > 0 and artist is not None:
-        artists = [a.strip() for a in re.split(split_pattern_artists, artist)]
+        artists = [a.strip() for a in re.split(split_pattern_artists, artist) if a.strip()]
     elif artist is not None:
         artists = [artist.strip()]
     else:
@@ -1285,8 +1285,9 @@ def get_artists_pandas(
         df["artist"] = df["artist"].str.split(split_pattern_artists)
         df = df.explode("artist")
 
-    # Strip whitespace
+    # Strip whitespace; drop empty strings (e.g. ", &" produces "") and NaN (NULL in DB).
     df["artist"] = df["artist"].str.strip()
+    df = df[df["artist"].notna() & (df["artist"] != "")]
     df["added"] = df["added"] * 1000
 
     # Group by artist and aggregate
