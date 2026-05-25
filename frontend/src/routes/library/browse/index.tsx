@@ -262,7 +262,7 @@ function ArtistRow({
                     variant="body2"
                     sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 0' }}
                 >
-                    {artist.artist}
+                    {artist.display_name ?? artist.artist}
                 </Typography>
                 {showTracks && (
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'text.disabled', flexShrink: 0 }}>

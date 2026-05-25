@@ -1,28 +1,20 @@
-import { Compass, Sparkles, Users } from 'lucide-react';
+import { Compass, Sparkles } from 'lucide-react';
 import { Box, Chip, Divider, Typography } from '@mui/material';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
 
-import { followedArtistsQueryOptions } from '@/api/discovery';
 import { artistsQueryOptions } from '@/api/library';
 import { PageWrapper } from '@/components/common/page';
 
 export const Route = createFileRoute('/library/discovery')({
     component: RouteComponent,
     loader: async ({ context }) => {
-        const p1 = context.queryClient.ensureQueryData(artistsQueryOptions());
-        const p2 = context.queryClient.ensureQueryData(
-            followedArtistsQueryOptions()
-        );
-        await Promise.all([p1, p2]);
+        await context.queryClient.ensureQueryData(artistsQueryOptions());
     },
 });
 
 function RouteComponent() {
     const { data: artists } = useSuspenseQuery(artistsQueryOptions());
-    const { data: followedArtists } = useSuspenseQuery(
-        followedArtistsQueryOptions()
-    );
 
     const topSeeds = [...artists]
         .sort((a, b) => b.item_count - a.item_count)
@@ -98,40 +90,6 @@ function RouteComponent() {
                 )}
             </Box>
 
-            <Divider />
-
-            <Box
-                sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: 1,
-                }}
-            >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Users size={20} />
-                    <Typography variant="h6" fontWeight={700}>
-                        Followed artists
-                    </Typography>
-                </Box>
-                <Typography variant="body2" color="text.secondary">
-                    {followedArtists.length} followed
-                </Typography>
-            </Box>
-
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                {followedArtists.length > 0 ? (
-                    followedArtists.map((artist) => (
-                        <Chip key={artist.name} label={artist.name} />
-                    ))
-                ) : (
-                    <Typography color="text.secondary">
-                        No followed artists yet. Use the Artists page to add
-                        some and improve discovery.
-                    </Typography>
-                )}
-            </Box>
         </PageWrapper>
     );
 }

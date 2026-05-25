@@ -5,9 +5,10 @@ import {
     Button,
     CircularProgress,
     Dialog,
+    DialogActions,
     DialogContent,
+    DialogContentText,
     DialogTitle,
-
     FormControlLabel,
     IconButton,
     InputAdornment,
@@ -20,20 +21,19 @@ import {
     TextField,
     Tooltip,
     Typography,
-
 } from '@mui/material';
-import { UserRoundMinusIcon, UserRoundPlusIcon, SearchIcon, XIcon, CheckIcon, RefreshCw } from 'lucide-react';
+import { UserRoundPlusIcon, SearchIcon, CheckIcon, RefreshCw, ExternalLinkIcon, Trash2Icon } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 
 import { Artist, artistsQueryOptions, fetchMissingAlbumsByArtist, missingAlbumsByArtistQueryOptions } from '@/api/library';
 import {
     ArtistSearchResult,
-    FollowedArtist,
-    followArtist,
-    followedArtistsQueryOptions,
+    TrackedArtist,
+    addTrackedArtist,
+    trackedArtistsQueryOptions,
     searchArtists,
-    unfollowArtist,
+    removeTrackedArtist,
 } from '@/api/discovery';
 import { meQueryOptions } from '@/api/auth';
 import { ArtistIcon } from '@/components/common/icons';
@@ -49,48 +49,41 @@ export const Route = createFileRoute('/library/browse/artists/')({
 
 function RouteComponent() {
     const { data: libraryArtists } = useSuspenseQuery(artistsQueryOptions());
-    const { data: followedArtists = [] } = useQuery(followedArtistsQueryOptions());
+    const { data: trackedArtists = [] } = useQuery(trackedArtistsQueryOptions());
     const { data: me } = useQuery(meQueryOptions());
     const canAddArtist = me?.can_add_artist ?? true;
 
-    const [followDialogOpen, setFollowDialogOpen] = useState(false);
+    const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [albumArtistOnly, setAlbumArtistOnly] = useState(true);
 
-    // Merge: library artists + followed artists not already in library
     const libraryNames = useMemo(
         () => new Set(libraryArtists.map((a) => a.artist.toLowerCase())),
         [libraryArtists]
     );
-    const followedNames = useMemo(
-        () => new Set(followedArtists.map((a) => a.name.toLowerCase())),
-        [followedArtists]
-    );
 
     const mergedArtists: Artist[] = useMemo(() => {
-        const libraryWithFollowState: Artist[] = libraryArtists.map((artist) => ({
+        const libraryWithState: Artist[] = libraryArtists.map((artist) => ({
             ...artist,
-            followed:
-                Boolean(artist.followed) ||
-                followedNames.has(artist.artist.toLowerCase()),
+            in_library: true,
         }));
 
-        const followedOnly: Artist[] = followedArtists
+        const trackedOnly: Artist[] = trackedArtists
             .filter((f) => !libraryNames.has(f.name.toLowerCase()))
             .map((f) => ({
                 artist: f.name,
+                display_name: undefined,
                 album_count: 0,
                 item_count: 0,
                 missing_count: f.missing_count ?? 0,
                 total_size: 0,
-                followed: true,
+                in_library: false,
             }));
-        return [...libraryWithFollowState, ...followedOnly];
-    }, [libraryArtists, followedArtists, libraryNames, followedNames]);
+        return [...libraryWithState, ...trackedOnly];
+    }, [libraryArtists, trackedArtists, libraryNames]);
 
     const displayedArtists = useMemo(() => {
         if (!albumArtistOnly) return mergedArtists;
-        // Keep albumartists (album_count > 0) and followed-only artists
-        return mergedArtists.filter((a) => (a.album_count ?? 0) > 0 || a.followed);
+        return mergedArtists.filter((a) => (a.album_count ?? 0) > 0 || !a.in_library);
     }, [mergedArtists, albumArtistOnly]);
 
     return (
@@ -100,14 +93,14 @@ function RouteComponent() {
                 nArtists={displayedArtists.length}
                 albumArtistOnly={albumArtistOnly}
                 onAlbumArtistOnlyChange={setAlbumArtistOnly}
-                onAddArtist={() => setFollowDialogOpen(true)}
+                onAddArtist={() => setAddDialogOpen(true)}
                 canAddArtist={canAddArtist}
                 sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}
             />
-            <FollowArtistDialog
-                open={followDialogOpen}
-                onClose={() => setFollowDialogOpen(false)}
-                followedArtists={followedArtists}
+            <AddArtistDialog
+                open={addDialogOpen}
+                onClose={() => setAddDialogOpen(false)}
+                trackedArtists={trackedArtists}
             />
         </>
     );
@@ -131,37 +124,17 @@ function ArtistsListWrapper({
 } & BoxProps) {
     const [filter, setFilter] = useState<string>('');
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [confirmRemove, setConfirmRemove] = useState<string[] | null>(null);
     const queryClient = useQueryClient();
 
-    const followMutation = useMutation({
-        mutationFn: (name: string) => followArtist(name),
-        onSuccess: () => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
-        },
-    });
-
-    const bulkFollowMutation = useMutation({
+    const removeMutation = useMutation({
         mutationFn: async (names: string[]) => {
-            await Promise.all(names.map((name) => followArtist(name)));
+            await Promise.all(names.map((name) => removeTrackedArtist(name)));
         },
         onSuccess: () => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
-        },
-    });
-
-    const unfollowMutation = useMutation({
-        mutationFn: (name: string) => unfollowArtist(name),
-        onSuccess: () => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
-        },
-    });
-
-    const bulkUnfollowMutation = useMutation({
-        mutationFn: async (names: string[]) => {
-            await Promise.all(names.map((name) => unfollowArtist(name)));
-        },
-        onSuccess: () => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['trackedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['artists'] });
+            setSelected(new Set());
         },
     });
 
@@ -174,7 +147,6 @@ function ArtistsListWrapper({
 
     const nRemovedByFilter = artists.length - filteredData.length;
 
-    // Remove selected artists that scrolled out of the visible set.
     useEffect(() => {
         const visible = new Set(filteredData.map((a: Artist) => a.artist));
         setSelected((prev: Set<string>) => {
@@ -183,19 +155,7 @@ function ArtistsListWrapper({
         });
     }, [filteredData]);
 
-    const followedNames = useMemo(
-        () => new Set(filteredData.filter((a: Artist) => a.followed).map((a: Artist) => a.artist)),
-        [filteredData]
-    );
-
-    const selectedToFollow = useMemo(
-        () => [...selected].filter((name) => !followedNames.has(name)),
-        [selected, followedNames]
-    );
-    const selectedToUnfollow = useMemo(
-        () => [...selected].filter((name) => followedNames.has(name)),
-        [selected, followedNames]
-    );
+    const selectedToRemove = useMemo(() => [...selected], [selected]);
 
     const handleToggleSelection = (artistName: string, checked: boolean) => {
         setSelected((prev: Set<string>) => {
@@ -218,22 +178,18 @@ function ArtistsListWrapper({
         });
     };
 
-    const handleFollowOne = (artistName: string) => {
-        followMutation.mutate(artistName);
+    const handleRemoveOne = (artistName: string) => {
+        setConfirmRemove([artistName]);
     };
 
-    const handleFollowSelected = () => {
-        if (selectedToFollow.length === 0) return;
-        bulkFollowMutation.mutate(selectedToFollow);
+    const handleRemoveSelected = () => {
+        if (selectedToRemove.length === 0) return;
+        setConfirmRemove(selectedToRemove);
     };
 
-    const handleUnfollowOne = (artistName: string) => {
-        unfollowMutation.mutate(artistName);
-    };
-
-    const handleUnfollowSelected = () => {
-        if (selectedToUnfollow.length === 0) return;
-        bulkUnfollowMutation.mutate(selectedToUnfollow);
+    const handleConfirmRemove = () => {
+        if (confirmRemove) removeMutation.mutate(confirmRemove);
+        setConfirmRemove(null);
     };
 
     const bulkRefreshMissingMutation = useMutation({
@@ -247,7 +203,7 @@ function ArtistsListWrapper({
         },
         onSettled: () => {
             void queryClient.invalidateQueries({ queryKey: ['artists'] });
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['trackedArtists'] });
         },
     });
 
@@ -256,9 +212,14 @@ function ArtistsListWrapper({
         bulkRefreshMissingMutation.mutate([...selected]);
     };
 
+    const confirmRemoveArtists = confirmRemove
+        ? artists.filter((a) => confirmRemove.includes(a.artist))
+        : [];
+    const confirmHasAlbums = confirmRemoveArtists.some((a) => (a.album_count ?? 0) > 0);
+
     return (
         <Box {...props}>
-            {/* Header row: title + count + follow button */}
+            {/* Header row */}
             <Box
                 sx={{
                     display: 'flex',
@@ -277,7 +238,7 @@ function ArtistsListWrapper({
                 <Typography variant="caption" color="text.disabled">
                     {nArtists}
                 </Typography>
-                <Tooltip title={canAddArtist ? 'Follow a new artist' : 'Permission required to add new artists'}>
+                <Tooltip title={canAddArtist ? 'Add a new artist' : 'Permission required to add new artists'}>
                     <span>
                     <Button
                         size="small"
@@ -295,14 +256,14 @@ function ArtistsListWrapper({
                         })}
                     >
                         <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
-                            Follow
+                            Add Artist
                         </Box>
                     </Button>
                     </span>
                 </Tooltip>
             </Box>
 
-            {/* Toolbar: search + switch + bulk actions */}
+            {/* Toolbar */}
             <Box
                 sx={(theme) => ({
                     display: 'flex',
@@ -338,30 +299,16 @@ function ArtistsListWrapper({
                     sx={{ m: 0, mr: 'auto' }}
                 />
                 <Box sx={{ display: 'flex', gap: 0.75 }}>
-                    <Tooltip title={`Follow Selected (${selectedToFollow.length})`}>
-                        <span>
-                            <Button size="small" variant="outlined"
-                                onClick={handleFollowSelected}
-                                disabled={selectedToFollow.length === 0 || followMutation.isPending || bulkFollowMutation.isPending}
-                                sx={(theme) => ({ textTransform: 'none', fontSize: 12, [theme.breakpoints.down('tablet')]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { mr: 0 } } })}
-                                startIcon={bulkFollowMutation.isPending ? <CircularProgress size={12} /> : <UserRoundPlusIcon size={12} />}
-                            >
-                                <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
-                                    Follow ({selectedToFollow.length})
-                                </Box>
-                            </Button>
-                        </span>
-                    </Tooltip>
-                    <Tooltip title={`Unfollow Selected (${selectedToUnfollow.length})`}>
+                    <Tooltip title={`Remove Selected (${selectedToRemove.length})`}>
                         <span>
                             <Button size="small" variant="outlined" color="error"
-                                onClick={handleUnfollowSelected}
-                                disabled={selectedToUnfollow.length === 0 || unfollowMutation.isPending || bulkUnfollowMutation.isPending}
+                                onClick={handleRemoveSelected}
+                                disabled={selectedToRemove.length === 0 || removeMutation.isPending}
                                 sx={(theme) => ({ textTransform: 'none', fontSize: 12, [theme.breakpoints.down('tablet')]: { minWidth: 0, px: 1, '& .MuiButton-startIcon': { mr: 0 } } })}
-                                startIcon={bulkUnfollowMutation.isPending ? <CircularProgress size={12} /> : <UserRoundMinusIcon size={12} />}
+                                startIcon={removeMutation.isPending ? <CircularProgress size={12} /> : <Trash2Icon size={12} />}
                             >
                                 <Box component="span" sx={(theme) => ({ [theme.breakpoints.down('tablet')]: { display: 'none' } })}>
-                                    Unfollow ({selectedToUnfollow.length})
+                                    Remove ({selectedToRemove.length})
                                 </Box>
                             </Button>
                         </span>
@@ -395,31 +342,53 @@ function ArtistsListWrapper({
                     selected={selected}
                     onToggleSelection={handleToggleSelection}
                     onToggleSelectAll={handleToggleSelectAll}
-                    onFollowArtist={handleFollowOne}
-                    isFollowingArtist={(artistName) =>
-                        followMutation.isPending && followMutation.variables === artistName
+                    onRemoveArtist={handleRemoveOne}
+                    isRemovingArtist={(artistName) =>
+                        removeMutation.isPending && (removeMutation.variables ?? []).includes(artistName)
                     }
-                    onUnfollowArtist={handleUnfollowOne}
-                    isUnfollowingArtist={(artistName) =>
-                        unfollowMutation.isPending && unfollowMutation.variables === artistName
-                    }
-                    disableActions={bulkFollowMutation.isPending || bulkUnfollowMutation.isPending}
+                    disableActions={removeMutation.isPending}
                 />
             </Box>
+
+            {/* Confirm remove dialog */}
+            <Dialog open={confirmRemove !== null} onClose={() => setConfirmRemove(null)} maxWidth="xs" fullWidth>
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Trash2Icon size={18} />
+                    Remove {confirmRemove?.length === 1 ? 'Artist' : `${confirmRemove?.length ?? 0} Artists`}
+                </DialogTitle>
+                <DialogContent>
+                    <DialogContentText>
+                        {confirmRemove?.length === 1
+                            ? `Remove "${confirmRemove[0]}" from the tracked list?`
+                            : `Remove ${confirmRemove?.length ?? 0} artists from the tracked list?`}
+                        {confirmHasAlbums && (
+                            <Box component="span" sx={{ display: 'block', mt: 1, color: 'error.main', fontWeight: 600 }}>
+                                This will permanently delete all associated albums and audio files from the library.
+                            </Box>
+                        )}
+                    </DialogContentText>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfirmRemove(null)}>Cancel</Button>
+                    <Button color="error" variant="contained" onClick={handleConfirmRemove} disabled={removeMutation.isPending}>
+                        {removeMutation.isPending ? <CircularProgress size={16} /> : 'Remove'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Box>
     );
 }
 
-/* ─────────────────────── Follow Artist Dialog ───────────────────────── */
+/* ──────────────────────── Add Artist Dialog ────────────────────────── */
 
-function FollowArtistDialog({
+function AddArtistDialog({
     open,
     onClose,
-    followedArtists,
+    trackedArtists,
 }: {
     open: boolean;
     onClose: () => void;
-    followedArtists: FollowedArtist[];
+    trackedArtists: TrackedArtist[];
 }) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<ArtistSearchResult[]>([]);
@@ -427,30 +396,30 @@ function FollowArtistDialog({
     const [searchError, setSearchError] = useState<string | null>(null);
     const queryClient = useQueryClient();
 
-    const followedNames = useMemo(
-        () => new Set(followedArtists.map((a) => a.name.toLowerCase())),
-        [followedArtists]
+    const trackedNames = useMemo(
+        () => new Set(trackedArtists.map((a) => a.name.toLowerCase())),
+        [trackedArtists]
     );
 
-    const followMutation = useMutation({
-        mutationFn: (name: string) => followArtist(name),
-        onSuccess: (_data, name) => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
-            // Update result list to reflect follow state
+    const addMutation = useMutation({
+        mutationFn: (artist: ArtistSearchResult) => addTrackedArtist(artist.name, artist.original_name),
+        onSuccess: (_data, artist) => {
+            void queryClient.invalidateQueries({ queryKey: ['trackedArtists'] });
             setResults((prev) =>
                 prev.map((r) =>
-                    r.name.toLowerCase() === name.toLowerCase()
-                        ? { ...r, followed: true }
+                    r.name.toLowerCase() === artist.name.toLowerCase()
+                        ? { ...r, tracked: true }
                         : r
                 )
             );
         },
     });
 
-    const unfollowMutation = useMutation({
-        mutationFn: (name: string) => unfollowArtist(name),
+    const removeMutation = useMutation({
+        mutationFn: (name: string) => removeTrackedArtist(name),
         onSuccess: () => {
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['trackedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['artists'] });
         },
     });
 
@@ -480,7 +449,7 @@ function FollowArtistDialog({
         <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
             <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <UserRoundPlusIcon size={20} />
-                Follow Artist
+                Add Artist
             </DialogTitle>
             <DialogContent>
                 <Box sx={{ display: 'flex', gap: 1, mb: 2, mt: 0.5 }}>
@@ -513,33 +482,27 @@ function FollowArtistDialog({
                 </Box>
                 {results.length > 0 && (
                     <List dense disablePadding>
-                        {results.map((artist) => {
-                            const isFollowed =
-                                artist.followed ||
-                                followedNames.has(artist.name.toLowerCase());
+                        {results.map((artist, idx) => {
+                            const isTracked = artist.tracked || trackedNames.has(artist.name.toLowerCase());
                             return (
                                 <ListItem
-                                    key={artist.id}
+                                    key={artist.id ?? `deezer-${artist.deezer_id ?? idx}`}
                                     secondaryAction={
-                                        isFollowed ? (
-                                            <Tooltip title="Unfollow">
+                                        isTracked ? (
+                                            <Tooltip title="Remove">
                                                 <IconButton
                                                     size="small"
                                                     color="success"
-                                                    onClick={() =>
-                                                        unfollowMutation.mutate(artist.name)
-                                                    }
+                                                    onClick={() => removeMutation.mutate(artist.name)}
                                                 >
                                                     <CheckIcon size={16} />
                                                 </IconButton>
                                             </Tooltip>
                                         ) : (
-                                            <Tooltip title="Follow">
+                                            <Tooltip title="Add">
                                                 <IconButton
                                                     size="small"
-                                                    onClick={() =>
-                                                        followMutation.mutate(artist.name)
-                                                    }
+                                                    onClick={() => addMutation.mutate(artist)}
                                                 >
                                                     <UserRoundPlusIcon size={16} />
                                                 </IconButton>
@@ -557,9 +520,27 @@ function FollowArtistDialog({
                                     <ListItemText
                                         primary={artist.name}
                                         secondary={
-                                            [artist.disambiguation, artist.country]
-                                                .filter(Boolean)
-                                                .join(' · ') || undefined
+                                            (artist.disambiguation || artist.country || artist.mb_url) ? (
+                                                <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                                    <span>
+                                                        {[artist.disambiguation, artist.country].filter(Boolean).join(' · ')}
+                                                    </span>
+                                                    {artist.mb_url && (
+                                                        <Tooltip title="View on MusicBrainz">
+                                                            <Box
+                                                                component="a"
+                                                                href={artist.mb_url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                onClick={(e) => e.stopPropagation()}
+                                                                sx={{ color: 'text.disabled', display: 'inline-flex', '&:hover': { color: 'primary.main' } }}
+                                                            >
+                                                                <ExternalLinkIcon size={11} />
+                                                            </Box>
+                                                        </Tooltip>
+                                                    )}
+                                                </Box>
+                                            ) : undefined
                                         }
                                     />
                                 </ListItem>
@@ -568,22 +549,12 @@ function FollowArtistDialog({
                     </List>
                 )}
                 {searchError && (
-                    <Typography
-                        variant="body2"
-                        color="error"
-                        textAlign="center"
-                        sx={{ py: 2 }}
-                    >
+                    <Typography variant="body2" color="error" textAlign="center" sx={{ py: 2 }}>
                         {searchError}
                     </Typography>
                 )}
                 {results.length === 0 && !searching && !searchError && query && (
-                    <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        textAlign="center"
-                        sx={{ py: 2 }}
-                    >
+                    <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ py: 2 }}>
                         No results. Try a different name.
                     </Typography>
                 )}

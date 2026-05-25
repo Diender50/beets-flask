@@ -691,6 +691,8 @@ async def all_albums(
 
 @router.get("/artist/{artist_name:path}/albums")
 async def albums_by_artist(artist_name: str, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> list:
+    from beets_flask.server.routes.library.artists import _resolve_canonical_name
+    artist_name = _resolve_canonical_name(artist_name)
     with lib.transaction() as tx:
         rows = tx.query("SELECT id FROM albums WHERE instr(albumartist, ?) > 0", (artist_name,))
     return [_rep(lib.get_album(row[0]), expand=expand is not None, minimal=minimal is not None) for row in rows]
@@ -767,6 +769,8 @@ async def all_items(
 
 @router.get("/artist/{artist_name:path}/items")
 async def items_by_artist(artist_name: str, lib: BeetsLib, expand: str | None = None, minimal: str | None = None) -> list:
+    from beets_flask.server.routes.library.artists import _resolve_canonical_name
+    artist_name = _resolve_canonical_name(artist_name)
     with lib.transaction() as tx:
         rows = tx.query("SELECT id FROM items WHERE instr(artist, ?) > 0", (artist_name,))
     return [_rep(lib.get_item(row[0]), expand=expand is not None, minimal=minimal is not None) for row in rows]

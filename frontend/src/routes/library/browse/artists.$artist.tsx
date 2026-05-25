@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Button,
     Dialog,
     DialogActions,
     DialogContent,
+    DialogContentText,
     DialogTitle,
     Box,
     BoxProps,
@@ -26,7 +27,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, DownloadIcon, PauseIcon, PlayIcon, RefreshCw, Star, StarOff, Trash2, XCircleIcon } from 'lucide-react';
+import { AlertCircle, CheckIcon, ChevronDownIcon, ChevronRightIcon, Clock, DownloadIcon, PauseIcon, PlayIcon, RefreshCw, Trash2, XCircleIcon } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
@@ -39,21 +40,21 @@ import {
     Item,
     itemsByArtistQueryOptions,
     MissingAlbum,
+    MissingAlbumTrack,
     missingAlbumsByArtistQueryOptions,
     missingAlbumTracksQueryOptions,
 } from '@/api/library';
 import {
+    BestRejected,
     cleanupSlskdSearches,
     DownloadQuality,
     DownloadSuggestion,
-    followArtist,
-    followedArtistsQueryOptions,
     getDownloadJob,
     getDownloadSuggestions,
+    probeAndQueueDownload,
     qualityPriorityQueryOptions,
-    startBatchDownload,
     startDownload,
-    unfollowArtist,
+    removeTrackedArtist,
 } from '@/api/discovery';
 import { deleteAlbumFromLibrary } from '@/api/library';
 import { meQueryOptions } from '@/api/auth';
@@ -106,25 +107,22 @@ function RouteComponent() {
 function ArtistHeader() {
     const params = Route.useParams();
     const qc = useQueryClient();
+    const navigate = useNavigate();
     const { data: artist } = useSuspenseQuery(artistQueryOptions(params.artist));
-    const { data: followed = [] } = useQuery(followedArtistsQueryOptions());
+    const [confirmRemove, setConfirmRemove] = useState(false);
 
-    const isFollowed = artist.followed || followed.some(
-        (f) => f.name.toLowerCase() === params.artist.toLowerCase()
-    );
-
-    const followMutation = useMutation<void, Error, void>({
+    const removeMutation = useMutation<void, Error, void>({
         mutationFn: async () => {
-            if (isFollowed) {
-                await unfollowArtist(params.artist);
-            } else {
-                await followArtist(params.artist);
-            }
+            await removeTrackedArtist(artist.artist);
         },
         onSuccess: () => {
-            void qc.invalidateQueries({ queryKey: ['followedArtists'] });
+            void qc.invalidateQueries({ queryKey: ['trackedArtists'] });
+            void qc.invalidateQueries({ queryKey: ['artists'] });
+            void navigate({ to: '/library/browse/artists' });
         },
     });
+
+    const hasAlbums = (artist.album_count ?? 0) > 0;
 
     return (
         <Box
@@ -146,19 +144,27 @@ function ArtistHeader() {
             <Typography variant="caption" color="text.disabled">/</Typography>
 
             {/* Artist name */}
-            <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1, lineHeight: 1.2 }}>
-                {artist.artist}
-            </Typography>
+            <Box sx={{ flex: 1, lineHeight: 1.2, minWidth: 0 }}>
+                <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.2 }}>
+                    {artist.display_name ?? artist.artist}
+                </Typography>
+                {artist.display_name && artist.display_name !== artist.artist && (
+                    <Typography variant="caption" color="text.disabled" sx={{ display: 'block' }}>
+                        {artist.artist}
+                    </Typography>
+                )}
+            </Box>
 
-            {/* Follow toggle */}
-            <Tooltip title={isFollowed ? 'Unfollow' : 'Follow'}>
+            {/* Remove artist */}
+            <Tooltip title="Remove artist">
                 <IconButton
                     size="small"
-                    onClick={() => followMutation.mutate()}
-                    disabled={followMutation.isPending}
-                    sx={{ opacity: isFollowed ? 1 : 0.4, '&:hover': { opacity: 1 } }}
+                    onClick={() => setConfirmRemove(true)}
+                    disabled={removeMutation.isPending}
+                    color="error"
+                    sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
                 >
-                    {isFollowed ? <Star size={15} fill="currentColor" /> : <StarOff size={15} />}
+                    <Trash2 size={15} />
                 </IconButton>
             </Tooltip>
 
@@ -177,6 +183,30 @@ function ArtistHeader() {
                     </Typography>
                 </Box>
             </Box>
+
+            {/* Confirm remove dialog */}
+            <Dialog open={confirmRemove} onClose={() => setConfirmRemove(false)} maxWidth="xs" fullWidth>
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Trash2 size={18} />
+                    Remove Artist
+                </DialogTitle>
+                <DialogContent>
+                    <DialogContentText>
+                        Remove &ldquo;{artist.display_name ?? artist.artist}&rdquo; from the tracked list?
+                        {hasAlbums && (
+                            <Box component="span" sx={{ display: 'block', mt: 1, color: 'error.main', fontWeight: 600 }}>
+                                This will permanently delete all {artist.album_count} album{artist.album_count !== 1 ? 's' : ''} and their audio files from the library.
+                            </Box>
+                        )}
+                    </DialogContentText>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfirmRemove(false)}>Cancel</Button>
+                    <Button color="error" variant="contained" onClick={() => { setConfirmRemove(false); removeMutation.mutate(); }} disabled={removeMutation.isPending}>
+                        {removeMutation.isPending ? <CircularProgress size={16} /> : 'Remove'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Box>
     );
 }
@@ -674,36 +704,17 @@ function TrackList({ releaseId }: { releaseId: string }) {
 }
 
 function MissingAlbumTrackCount({ album }: { album: MissingAlbum }) {
-    const releaseId = album.mb_releasegroupid;
-    const isMusicBrainzRelease = !!releaseId && !releaseId.startsWith('deezer:');
-    const shouldFetchCount =
-        isMusicBrainzRelease && (album.track_count === null || album.track_count === undefined);
-
-    const { data: tracks, isLoading } = useQuery({
-        ...missingAlbumTracksQueryOptions(releaseId ?? ''),
-        enabled: shouldFetchCount,
-    });
-
     if (album.track_count !== null && album.track_count !== undefined) {
         return <>{album.track_count}</>;
-    }
-    if (!releaseId) {
-        return <>-</>;
-    }
-    if (isLoading) {
-        return <CircularProgress size={12} />;
-    }
-    if (tracks && tracks.length > 0) {
-        return <>{tracks.length}</>;
     }
     return <>-</>;
 }
 
-function useExpectedTrackCount(album: MissingAlbum): number | null {
+function useExpectedTrackCount(album: MissingAlbum, fetchEnabled = false): number | null {
     const releaseId = album.mb_releasegroupid;
     const isMusicBrainzRelease = !!releaseId && !releaseId.startsWith('deezer:');
     const shouldFetchCount =
-        isMusicBrainzRelease && (album.track_count === null || album.track_count === undefined);
+        fetchEnabled && isMusicBrainzRelease && (album.track_count === null || album.track_count === undefined);
 
     const { data: tracks } = useQuery({
         ...missingAlbumTracksQueryOptions(releaseId ?? ''),
@@ -736,6 +747,14 @@ const LOSSLESS_CONTAINERS = new Set(['FLAC', 'ALAC', 'WAV', 'AIFF', 'PCM']);
 
 const TIER_HIGH_KBPS: Record<string, number> = { mp3: 320, opus: 192, m4a: 256, aac: 256, ogg: 192, vorbis: 192 };
 const TIER_MED_KBPS:  Record<string, number> = { mp3: 160, opus:  96, m4a:  96, aac:  96, ogg:  96, vorbis:  96 };
+
+function qualityTokenToTier(q: string): string {
+    if (!q) return 'low';
+    const [container, spec] = q.split(':');
+    if (!container) return 'low';
+    const kbps = spec ? parseInt(spec, 10) : null;
+    return resultTier(container, Number.isFinite(kbps) ? (kbps as number) : null);
+}
 
 function resultTier(container: string, kbps: number | null): string {
     const c = container.toLowerCase().replace('.', '');
@@ -800,8 +819,10 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         : undefined;
     const releaseId = !deezerId ? (album.mb_releasegroupid ?? undefined) : undefined;
     const tracklistReleaseId = album.mb_releasegroupid ?? (deezerId ? `deezer:${deezerId}` : undefined);
-    const expectedTrackCount = useExpectedTrackCount(album);
     const { data: me } = useQuery(meQueryOptions());
+    const { data: artistData } = useQuery(artistQueryOptions(artist));
+    // Use EN/FR alias for provider search queries; keep beets-stored name for import
+    const searchArtist = artistData?.display_name ?? artist;
     const allowedTiers = useMemo(() => {
         const ALL_TIERS = ['flac', 'high', 'medium', 'low'];
         const startIdx: Record<string, number> = {
@@ -812,6 +833,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
     }, [me?.max_quality]);
     const [jobId, setJobId] = useState<string | null>(null);
     const [open, setOpen] = useState(false);
+    const expectedTrackCount = useExpectedTrackCount(album, open);
     const { data: expectedTracks = [] } = useQuery({
         ...missingAlbumTracksQueryOptions(tracklistReleaseId ?? ''),
         enabled: open && !!tracklistReleaseId,
@@ -836,7 +858,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             .map((choice) => String(choice.details.searchId ?? ''))
             .filter((value) => value.length > 0);
         void cleanupSlskdSearches({
-            artist,
+            artist: searchArtist,
             album: album.album,
             searchIds,
         }).catch(() => undefined);
@@ -897,31 +919,30 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             });
         };
 
+        const expectedTracksList = expectedTracks
+            .filter((t: MissingAlbumTrack) => t.title)
+            .map((t: MissingAlbumTrack) => ({ title: t.title, duration: t.duration ?? undefined }));
+
         const runProvider = async (
-            provider: 'slskd' | 'deemix' | 'squidwtf',
+            provider: 'deemix' | 'squidwtf',
             signal: AbortSignal,
             setLoading: (v: boolean) => void,
         ) => {
             try {
                 const data = await getDownloadSuggestions({
-                    artist,
+                    artist: searchArtist,
                     album: album.album,
                     provider,
                     signal,
                     expected_track_count: expectedTrackCount ?? undefined,
+                    expected_tracks: expectedTracksList.length ? expectedTracksList : undefined,
                 });
                 mergeChoices(data.results ?? []);
                 if (!cancelled) setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, [provider]: data.results?.length ?? 0 }));
             } catch (err) {
-                // Abort on popup close (or Strict Mode cleanup) should be silent.
-                if (err instanceof DOMException && err.name === 'AbortError') {
-                    return;
-                }
+                if (err instanceof DOMException && err.name === 'AbortError') return;
                 if (!cancelled) {
-                    setSuggestionErrors((prev) => [
-                        ...prev,
-                        `${provider}: ${(err as Error)?.message ?? 'request failed'}`,
-                    ]);
+                    setSuggestionErrors((prev) => [...prev, `${provider}: ${(err as Error)?.message ?? 'request failed'}`]);
                     setErrorProviders((prev: Set<string>) => new Set([...prev, provider]));
                 }
             } finally {
@@ -929,7 +950,54 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             }
         };
 
-        void runProvider('slskd', slskdCtrl.signal, setSlskdLoading);
+        // slskd: two sequential phases so primary results appear immediately,
+        // then original_name results are merged in without blocking phase 1.
+        const runSlskd = async () => {
+            const commonOpts = {
+                artist: searchArtist,
+                album: album.album,
+                provider: 'slskd' as const,
+                signal: slskdCtrl.signal,
+                expected_track_count: expectedTrackCount ?? undefined,
+                expected_tracks: expectedTracksList.length ? expectedTracksList : undefined,
+            };
+            let phase1Count = 0;
+            let phase2Count = 0;
+
+            // Phase 1: primary alias
+            try {
+                const phase1 = await getDownloadSuggestions(commonOpts);
+                mergeChoices(phase1.results ?? []);
+                phase1Count = phase1.results?.length ?? 0;
+            } catch (err) {
+                if (err instanceof DOMException && err.name === 'AbortError') {
+                    if (!cancelled) setSlskdLoading(false);
+                    return;
+                }
+                if (!cancelled) {
+                    setSuggestionErrors((prev) => [...prev, `slskd: ${(err as Error)?.message ?? 'request failed'}`]);
+                    setErrorProviders((prev: Set<string>) => new Set([...prev, 'slskd']));
+                    setSlskdLoading(false);
+                }
+                return;
+            }
+
+            // Phase 2: original_name (errors are silent — phase 1 results already shown)
+            try {
+                const phase2 = await getDownloadSuggestions({ ...commonOpts, extended: true });
+                mergeChoices(phase2.results ?? []);
+                phase2Count = phase2.results?.length ?? 0;
+            } catch (_err) {
+                // AbortError or network error: phase 1 results are valid, just stop here
+            }
+
+            if (!cancelled) {
+                setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, slskd: phase1Count + phase2Count }));
+                setSlskdLoading(false);
+            }
+        };
+
+        void runSlskd();
         void runProvider('deemix', deemixCtrl.signal, setDeemixLoading);
         void runProvider('squidwtf', squidwtfCtrl.signal, setSquidwtfLoading);
 
@@ -955,30 +1023,84 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         setSuggestionErrors((prev) => prev.filter((e) => !e.startsWith(`${provider}:`)));
         setLoading(true);
 
+        const mergeRetryChoices = (incoming: DownloadSuggestion[]) => {
+            if (cancelled) return;
+            setSuggestionChoices((prev) => {
+                const merged = [...prev, ...incoming];
+                const seen = new Set<string>();
+                return merged.filter((c) => {
+                    const k = `${c.provider}:${String(c.details.deezer_id ?? '')}:${String(c.details.folder ?? '')}:${String(c.details.quality ?? '')}:${c.title}`;
+                    if (seen.has(k)) return false;
+                    seen.add(k);
+                    return true;
+                }).sort((a, b) => b.score - a.score);
+            });
+        };
+
+        const retryTracksList = expectedTracks
+            .filter((t: MissingAlbumTrack) => t.title)
+            .map((t: MissingAlbumTrack) => ({ title: t.title, duration: t.duration ?? undefined }));
+
         const run = async () => {
+            const commonOpts = {
+                artist: searchArtist,
+                album: album.album,
+                provider,
+                signal: ctrl.signal,
+                expected_track_count: expectedTrackCount ?? undefined,
+                expected_tracks: retryTracksList.length ? retryTracksList : undefined,
+            };
+
+            if (provider !== 'slskd') {
+                // deemix / squidwtf: single phase
+                try {
+                    const data = await getDownloadSuggestions(commonOpts);
+                    mergeRetryChoices(data.results ?? []);
+                    if (!cancelled) setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, [provider]: data.results?.length ?? 0 }));
+                } catch (err) {
+                    if (err instanceof DOMException && err.name === 'AbortError') return;
+                    if (!cancelled) {
+                        setSuggestionErrors((prev) => [...prev, `${provider}: ${(err as Error)?.message ?? 'request failed'}`]);
+                        setErrorProviders((prev) => new Set([...prev, provider]));
+                    }
+                } finally {
+                    if (!cancelled) setLoading(false);
+                }
+                return;
+            }
+
+            // slskd: two sequential phases (same as main effect)
+            let phase1Count = 0;
+            let phase2Count = 0;
+
             try {
-                const data = await getDownloadSuggestions({ artist, album: album.album, provider, signal: ctrl.signal, expected_track_count: expectedTrackCount ?? undefined });
-                if (!cancelled) {
-                    setSuggestionChoices((prev) => {
-                        const merged = [...prev, ...(data.results ?? [])];
-                        const seen = new Set<string>();
-                        return merged.filter((c) => {
-                            const k = `${c.provider}:${String(c.details.deezer_id ?? '')}:${String(c.details.folder ?? '')}:${c.title}`;
-                            if (seen.has(k)) return false;
-                            seen.add(k);
-                            return true;
-                        }).sort((a, b) => b.score - a.score);
-                    });
-                    setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, [provider]: data.results?.length ?? 0 }));
-                }
+                const phase1 = await getDownloadSuggestions(commonOpts);
+                mergeRetryChoices(phase1.results ?? []);
+                phase1Count = phase1.results?.length ?? 0;
             } catch (err) {
-                if (err instanceof DOMException && err.name === 'AbortError') return;
-                if (!cancelled) {
-                    setSuggestionErrors((prev) => [...prev, `${provider}: ${(err as Error)?.message ?? 'request failed'}`]);
-                    setErrorProviders((prev) => new Set([...prev, provider]));
+                if (err instanceof DOMException && err.name === 'AbortError') {
+                    if (!cancelled) setLoading(false);
+                    return;
                 }
-            } finally {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setSuggestionErrors((prev) => [...prev, `slskd: ${(err as Error)?.message ?? 'request failed'}`]);
+                    setErrorProviders((prev) => new Set([...prev, 'slskd']));
+                    setLoading(false);
+                }
+                return;
+            }
+
+            try {
+                const phase2 = await getDownloadSuggestions({ ...commonOpts, extended: true });
+                mergeRetryChoices(phase2.results ?? []);
+                phase2Count = phase2.results?.length ?? 0;
+            } catch (_err) {
+                // silent — phase 1 results are valid
+            }
+
+            if (!cancelled) {
+                setProviderResultCount((prev: Partial<Record<string, number>>) => ({ ...prev, slskd: phase1Count + phase2Count }));
+                setLoading(false);
             }
         };
         void run();
@@ -1008,7 +1130,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             if (choice.provider === 'deemix') {
                 return startDownload({
                     album: album.album,
-                    artist,
+                    artist: searchArtist,
                     provider: 'deemix',
                     deezer_id: String(choice.details.deezer_id ?? deezerId ?? ''),
                     release_id: releaseId,
@@ -1018,7 +1140,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             if (choice.provider === 'squidwtf') {
                 return startDownload({
                     album: album.album,
-                    artist,
+                    artist: searchArtist,
                     provider: 'squidwtf',
                     squid_album_id: String(choice.details.squid_album_id ?? ''),
                     release_id: releaseId,
@@ -1027,7 +1149,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             }
             return startDownload({
                 album: album.album,
-                artist,
+                artist: searchArtist,
                 provider: 'slskd',
                 candidate: choice.details.candidate as Record<string, unknown>,
                 release_id: releaseId,
@@ -1200,7 +1322,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                 const allowed = allowedTiers.has(id);
                                 const on = selectedTiers.has(id);
                                 return (
-                                <Tooltip key={id} title={!allowed ? `Limité par max_quality (${me?.max_quality ?? ''})` : ''} placement="top">
+                                <Tooltip key={id} title={!allowed ? `Limité par max_quality (${me?.max_quality ?? ''})` : ''} placement="bottom">
                                     <span>
                                     <Chip
                                         label={label}
@@ -1453,6 +1575,353 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
     );
 }
 
+interface BatchAlbumEntry {
+    album: string;
+    artist: string;
+    release_id?: string;
+    deezer_id?: string;
+    squid_album_id?: string;
+    expected_tracks?: Array<{ title: string; duration?: number }>;
+}
+
+type AlbumBatchStatus =
+    | { phase: 'waiting' }
+    | { phase: 'probing' }
+    | { phase: 'queued'; provider: string; score: number; resultTitle: string; quality: string; jobId: string }
+    | { phase: 'not_found'; bestRejected?: BestRejected }
+    | { phase: 'failed'; error: string };
+
+function formatBatchQualityLabel(q: string): string {
+    const [container, spec] = q.split(':');
+    if (!container) return q.toUpperCase();
+    if (container === 'flac') return spec === '24' ? 'FLAC-24' : 'FLAC-16';
+    if (container === 'mp3') return `MP3-${spec}`;
+    if (container === 'opus') return `Opus-${spec}`;
+    if (container === 'm4a') return `AAC-${spec}`;
+    return q.toUpperCase();
+}
+
+function BatchDownloadDialog({
+    open,
+    onClose,
+    albums,
+    providers,
+    qualities,
+}: {
+    open: boolean;
+    onClose: () => void;
+    albums: BatchAlbumEntry[];
+    providers: string[];
+    qualities: string[];
+}) {
+    const { data: me } = useQuery(meQueryOptions());
+    const allowedTiers = useMemo(() => {
+        const ALL_TIERS = ['flac', 'high', 'medium', 'low'];
+        const startIdx: Record<string, number> = { flac: 0, high_lossy: 1, med_lossy: 2, low_lossy: 3 };
+        const idx = startIdx[me?.max_quality ?? 'flac'] ?? 0;
+        return new Set(ALL_TIERS.slice(idx));
+    }, [me?.max_quality]);
+
+    const [statuses, setStatuses] = useState<AlbumBatchStatus[]>([]);
+    const [running, setRunning] = useState(false);
+    // abort.abort() cancels the fetch client-side but the server may have already
+    // started processing — startedRef blocks the second StrictMode invocation
+    // from sending any HTTP request at all.
+    const startedRef = useRef(false);
+
+    useEffect(() => {
+        if (!open) {
+            startedRef.current = false;
+            return;
+        }
+        if (startedRef.current) return;
+        startedRef.current = true;
+        let cancelled = false;
+        const abort = new AbortController();
+
+        setStatuses(albums.map(() => ({ phase: 'waiting' as const })));
+        setRunning(true);
+
+        const run = async () => {
+            // Yield one tick so that React StrictMode's immediate cleanup (cancelled = true)
+            // is visible before we send any requests. Without this, startedRef blocks the
+            // second invocation while the first is already cancelled — spinner loops forever.
+            await new Promise<void>((res) => setTimeout(res, 0));
+            if (cancelled) return;
+
+            for (let i = 0; i < albums.length; i++) {
+                if (cancelled) break;
+                setStatuses((prev) => prev.map((s, idx) => idx === i ? { phase: 'probing' as const } : s));
+                try {
+                    const result = await probeAndQueueDownload({
+                        artist: albums[i].artist,
+                        album: albums[i].album,
+                        providers: providers as Array<'deemix' | 'slskd' | 'squidwtf'>,
+                        qualities,
+                        release_id: albums[i].release_id,
+                        deezer_id: albums[i].deezer_id,
+                        squid_album_id: albums[i].squid_album_id,
+                        expected_tracks: albums[i].expected_tracks,
+                        signal: abort.signal,
+                    });
+                    if (cancelled) break;
+                    if (result.status === 'queued') {
+                        setStatuses((prev) => prev.map((s, idx) =>
+                            idx === i ? {
+                                phase: 'queued',
+                                provider: result.provider ?? '',
+                                score: result.score ?? 0,
+                                resultTitle: result.result_title ?? albums[i].album,
+                                quality: result.quality ?? '',
+                                jobId: result.job_id ?? '',
+                            } : s
+                        ));
+                    } else if (result.status === 'not_found') {
+                        setStatuses((prev) => prev.map((s, idx) =>
+                            idx === i ? { phase: 'not_found', bestRejected: result.best_rejected } : s
+                        ));
+                    } else {
+                        setStatuses((prev) => prev.map((s, idx) =>
+                            idx === i ? {
+                                phase: 'failed',
+                                error: result.error ?? 'Download failed',
+                            } : s
+                        ));
+                    }
+                } catch (err) {
+                    if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) break;
+                    setStatuses((prev) => prev.map((s, idx) =>
+                        idx === i ? { phase: 'failed', error: (err as Error)?.message ?? 'Request failed' } : s
+                    ));
+                }
+            }
+            if (!cancelled) setRunning(false);
+        };
+
+        void run();
+
+        return () => {
+            cancelled = true;
+            abort.abort();
+            startedRef.current = false;
+        };
+    }, [open, albums, providers, qualities]);
+
+    const handleClose = () => {
+        onClose();
+    };
+
+    const handleDownloadAnyway = useCallback(async (i: number, bestRejected: BestRejected) => {
+        setStatuses((prev) => prev.map((s, idx) => idx === i ? { phase: 'probing' as const } : s));
+        try {
+            const entry = albums[i];
+            let job;
+            if (bestRejected.provider === 'deemix') {
+                job = await startDownload({
+                    album: entry.album, artist: entry.artist, provider: 'deemix',
+                    deezer_id: String(bestRejected.details.deezer_id ?? ''),
+                    release_id: entry.release_id,
+                    quality: deemixDetailsToQuality(bestRejected.details),
+                });
+            } else if (bestRejected.provider === 'squidwtf') {
+                job = await startDownload({
+                    album: entry.album, artist: entry.artist, provider: 'squidwtf',
+                    squid_album_id: String(bestRejected.details.squid_album_id ?? ''),
+                    release_id: entry.release_id,
+                    squid_quality: String(bestRejected.details.quality ?? '27'),
+                });
+            } else {
+                job = await startDownload({
+                    album: entry.album, artist: entry.artist, provider: 'slskd',
+                    candidate: bestRejected.details.candidate as Record<string, unknown>,
+                });
+            }
+            setStatuses((prev) => prev.map((s, idx) =>
+                idx === i ? {
+                    phase: 'queued' as const,
+                    provider: bestRejected.provider,
+                    score: bestRejected.score,
+                    resultTitle: bestRejected.title,
+                    quality: bestRejected.quality,
+                    jobId: job.job_id,
+                } : s
+            ));
+        } catch (err) {
+            setStatuses((prev) => prev.map((s, idx) =>
+                idx === i ? { phase: 'failed' as const, error: (err as Error)?.message ?? 'Download failed' } : s
+            ));
+        }
+    }, [albums]);
+
+    const doneCount = statuses.filter((s) => ['queued', 'failed', 'not_found'].includes(s.phase)).length;
+    const queuedCount = statuses.filter((s) => s.phase === 'queued').length;
+    const failedCount = statuses.filter((s) => s.phase === 'failed').length;
+    const notFoundCount = statuses.filter((s) => s.phase === 'not_found').length;
+
+    const activeProvider = (p: string) =>
+        p === 'deemix' ? 'primary.main' : p === 'squidwtf' ? 'success.main' : 'secondary.main';
+
+    return (
+        <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
+            <DialogTitle sx={{ py: 1.5, px: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    {running ? <CircularProgress size={16} /> : <DownloadIcon size={16} />}
+                    <Box>
+                        <Typography variant="subtitle1" fontWeight={600} sx={{ lineHeight: 1.2 }}>
+                            {running ? `Downloading… ${doneCount}/${albums.length}` : 'Batch download'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                            {queuedCount} queued
+                            {notFoundCount > 0 ? ` · ${notFoundCount} not found` : ''}
+                            {failedCount > 0 ? ` · ${failedCount} failed` : ''}
+                        </Typography>
+                    </Box>
+                </Box>
+            </DialogTitle>
+            <DialogContent dividers sx={{ p: 1.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                {albums.map((entry, i) => {
+                    const status = statuses[i] ?? { phase: 'waiting' as const };
+                    const isQueued = status.phase === 'queued';
+                    const isFailed = status.phase === 'failed';
+                    const isProbing = status.phase === 'probing';
+                    const isNotFound = status.phase === 'not_found';
+
+                    const effectiveBestRejected = isNotFound && status.bestRejected &&
+                        allowedTiers.has(qualityTokenToTier(status.bestRejected.quality))
+                        ? status.bestRejected : undefined;
+
+                    const dotColor = isQueued
+                        ? activeProvider(status.provider)
+                        : effectiveBestRejected
+                            ? activeProvider(effectiveBestRejected.provider)
+                            : 'transparent';
+                    const quality = isQueued ? status.quality : effectiveBestRejected?.quality ?? '';
+                    const score = isQueued ? status.score : effectiveBestRejected?.score ?? null;
+
+                    return (
+                        <Box
+                            key={i}
+                            sx={{
+                                borderRadius: 1,
+                                border: 1,
+                                borderColor: isQueued ? 'success.main'
+                                    : isNotFound ? 'warning.main'
+                                    : isFailed ? 'error.main'
+                                    : 'divider',
+                                overflow: 'hidden',
+                                opacity: status.phase === 'waiting' ? 0.4 : 1,
+                                transition: 'opacity 0.15s, border-color 0.15s',
+                            }}
+                        >
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.875 }}>
+                                {/* Provider accent dot */}
+                                <Box sx={{
+                                    width: 6, height: 6, borderRadius: '50%',
+                                    backgroundColor: dotColor,
+                                    flexShrink: 0,
+                                }} />
+
+                                {/* Text */}
+                                <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>
+                                        <Typography variant="body2" fontWeight={600} noWrap
+                                            sx={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                        >
+                                            {isQueued ? status.resultTitle : entry.album}
+                                        </Typography>
+                                        {(isProbing || status.phase === 'waiting') && (
+                                            <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0 }}>
+                                                {isProbing ? 'searching…' : 'waiting'}
+                                            </Typography>
+                                        )}
+                                    </Box>
+                                    {isQueued && status.resultTitle !== entry.album && (
+                                        <Typography variant="caption" color="text.disabled" noWrap sx={{ display: 'block' }}>
+                                            {entry.album}
+                                        </Typography>
+                                    )}
+                                    {isNotFound && effectiveBestRejected && (
+                                        <Typography variant="caption" color="text.disabled" noWrap sx={{ display: 'block' }}>
+                                            best: {effectiveBestRejected.title}
+                                        </Typography>
+                                    )}
+                                    {isNotFound && !effectiveBestRejected && (
+                                        <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
+                                            no match found
+                                        </Typography>
+                                    )}
+                                    {isNotFound && (
+                                        <Typography variant="caption" noWrap sx={{
+                                            display: 'block', fontStyle: 'italic',
+                                            fontSize: '0.6rem', color: 'text.disabled',
+                                        }}>
+                                            Try manual download for more results
+                                        </Typography>
+                                    )}
+                                    {isFailed && (
+                                        <Typography variant="caption" color="error.main" noWrap sx={{ display: 'block' }}>
+                                            {status.error}
+                                        </Typography>
+                                    )}
+                                </Box>
+
+                                {/* Right: quality + score + action */}
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+                                    {effectiveBestRejected && (
+                                        <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0 }}>
+                                            {effectiveBestRejected.provider}
+                                        </Typography>
+                                    )}
+                                    {quality && (
+                                        <Box component="span" sx={{
+                                            fontSize: '0.58rem', fontWeight: 700,
+                                            px: 0.5, py: 0.1, borderRadius: 0.5, lineHeight: 1.5,
+                                            backgroundColor: quality.startsWith('flac') ? 'info.main' : quality.startsWith('mp3') ? 'warning.main' : 'action.selected',
+                                            color: quality.startsWith('flac') ? 'info.contrastText' : quality.startsWith('mp3') ? 'warning.contrastText' : 'text.secondary',
+                                        }}>
+                                            {formatBatchQualityLabel(quality)}
+                                        </Box>
+                                    )}
+                                    {score !== null && (
+                                        <Typography variant="caption" sx={{
+                                            fontSize: '0.65rem', fontWeight: 600, minWidth: 28, textAlign: 'right',
+                                            color: score > 0.9 ? 'success.main' : score > 0.6 ? 'warning.main' : 'error.main',
+                                        }}>
+                                            {score.toFixed(2)}
+                                        </Typography>
+                                    )}
+                                    {status.phase === 'waiting' && <Clock size={14} style={{ color: 'var(--mui-palette-text-disabled)' }} />}
+                                    {isProbing && <CircularProgress size={14} />}
+                                    {isQueued && <CheckIcon size={14} style={{ color: 'var(--mui-palette-success-main)' }} />}
+                                    {isFailed && <XCircleIcon size={14} style={{ color: 'var(--mui-palette-error-main)' }} />}
+                                    {isNotFound && !effectiveBestRejected && (
+                                        <AlertCircle size={14} style={{ color: 'var(--mui-palette-warning-main)' }} />
+                                    )}
+                                    {isNotFound && effectiveBestRejected && (
+                                        <Tooltip title="Download anyway">
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => handleDownloadAnyway(i, effectiveBestRejected)}
+                                                color="warning"
+                                                sx={{ p: 0.5 }}
+                                            >
+                                                <DownloadIcon size={15} />
+                                            </IconButton>
+                                        </Tooltip>
+                                    )}
+                                </Box>
+                            </Box>
+                        </Box>
+                    );
+                })}
+            </DialogContent>
+            <DialogActions sx={{ py: 0.75 }}>
+                <Button size="small" onClick={handleClose}>Close</Button>
+            </DialogActions>
+        </Dialog>
+    );
+}
+
 function MissingAlbumsViewer({
     albums,
     artist,
@@ -1469,6 +1938,8 @@ function MissingAlbumsViewer({
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const { replaceQueue, playing, togglePlaying, currentItem } = useAudioContext();
+    const { data: artistData } = useQuery(artistQueryOptions(artist));
+    const searchArtist = artistData?.display_name ?? artist;
 
     const [pendingDelete, setPendingDelete] = useState<MissingAlbum | null>(null);
 
@@ -1491,7 +1962,7 @@ function MissingAlbumsViewer({
             setPendingDelete(null);
             void queryClient.invalidateQueries({ queryKey: ['albums'] });
             void queryClient.invalidateQueries({ queryKey: ['artists'] });
-            void queryClient.invalidateQueries({ queryKey: ['followedArtists'] });
+            void queryClient.invalidateQueries({ queryKey: ['trackedArtists'] });
         },
         onError: () => setPendingDelete(null),
     });
@@ -1579,36 +2050,26 @@ function MissingAlbumsViewer({
     const selectedCount = selectedEntries.length;
     const allSelected = selectedCount > 0 && selectedCount === downloadableEntries.length;
 
-    const batchMutation = useMutation({
-        mutationFn: async () => {
-            const payload = selectedEntries.map((entry) => {
-                const releaseId = entry.album.mb_releasegroupid;
-                const deezerId = releaseId?.startsWith('deezer:')
-                    ? releaseId.slice(7)
-                    : undefined;
-                const squidAlbumId = releaseId?.startsWith('squid:')
-                    ? releaseId.slice(6)
-                    : undefined;
+    const [batchDialogOpen, setBatchDialogOpen] = useState(false);
 
-                return {
-                    album: entry.album.album,
-                    artist,
-                    release_id: !deezerId ? (releaseId ?? undefined) : undefined,
-                    deezer_id: deezerId,
-                    squid_album_id: squidAlbumId,
-                };
-            });
-
-            return startBatchDownload({
-                providers: Array.from(batchProviders),
-                qualities: selectedQualities,
-                albums: payload,
-            });
-        },
-        onSuccess: () => {
-            setSelectedIds(new Set());
-        },
-    });
+    const batchAlbums = useMemo<BatchAlbumEntry[]>(() => selectedEntries.map((entry) => {
+        const releaseId = entry.album.mb_releasegroupid;
+        const deezerId = releaseId?.startsWith('deezer:') ? releaseId.slice(7) : undefined;
+        const squidAlbumId = releaseId?.startsWith('squid:') ? releaseId.slice(6) : undefined;
+        const cachedTracks = queryClient.getQueryData<MissingAlbumTrack[]>(
+            missingAlbumTracksQueryOptions(releaseId ?? '').queryKey
+        );
+        return {
+            album: entry.album.album,
+            artist: searchArtist,
+            release_id: !deezerId ? (releaseId ?? undefined) : undefined,
+            deezer_id: deezerId,
+            squid_album_id: squidAlbumId,
+            expected_tracks: cachedTracks
+                ?.filter((t) => t.title)
+                .map((t) => ({ title: t.title, duration: t.duration ?? undefined })),
+        };
+    }), [selectedEntries, searchArtist, queryClient]);
 
     if (albums.length === 0) {
         return (
@@ -1688,17 +2149,14 @@ function MissingAlbumsViewer({
                         disabled={
                             !canAutoDownload ||
                             selectedCount === 0 ||
-                            batchMutation.isPending ||
                             batchProviders.size === 0 ||
-                            selectedQualities.length === 0
+                            batchTiers.size === 0
                         }
-                        onClick={() => batchMutation.mutate()}
+                        onClick={() => setBatchDialogOpen(true)}
                         sx={{ fontWeight: 700, textTransform: 'none', height: 26, fontSize: 11, px: 1, whiteSpace: 'nowrap' }}
                     >
-                        {batchMutation.isPending
-                            ? <CircularProgress size={12} sx={{ mr: 0.5 }} />
-                            : <DownloadIcon size={12} style={{ marginRight: 4 }} />}
-                        {batchMutation.isPending ? 'Scheduling…' : selectedCount > 0 ? `${selectedCount}` : 'Download'}
+                        <DownloadIcon size={12} style={{ marginRight: 4 }} />
+                        {selectedCount > 0 ? `${selectedCount}` : 'Download'}
                     </Button>
                 </Box>
 
@@ -1753,7 +2211,7 @@ function MissingAlbumsViewer({
                             const on = batchTiers.has(id);
                             const tierAllowed = allowedTiers.has(id);
                             return (
-                                <Tooltip key={id} title={tierAllowed ? desc : `Limité par max_quality (${me?.max_quality ?? ''})`} placement="top">
+                                <Tooltip key={id} title={tierAllowed ? desc : `Limité par max_quality (${me?.max_quality ?? ''})`} placement="bottom">
                                     <span>
                                     <Chip
                                         label={label}
@@ -1774,17 +2232,6 @@ function MissingAlbumsViewer({
                         })}
                     </Box>
                 </Box>
-
-                {/* Status feedback */}
-                {(batchMutation.isError || batchMutation.data) && (
-                    <Typography variant="caption" color={batchMutation.isError ? 'error.main' : 'text.secondary'} sx={{ ml: 0.5 }}>
-                        {batchMutation.isError
-                            ? ((batchMutation.error as Error)?.message ?? 'Batch scheduling failed')
-                            : batchMutation.data
-                              ? `Queued ${batchMutation.data.queued}/${batchMutation.data.requested}`
-                              : null}
-                    </Typography>
-                )}
 
             </Box>}
             {orderedTypes.map((type) => (
@@ -2055,6 +2502,18 @@ function MissingAlbumsViewer({
                 </Box>
             ))}
         </Box>
+
+        {/* Batch download progress dialog */}
+        <BatchDownloadDialog
+            open={batchDialogOpen}
+            onClose={() => {
+                setBatchDialogOpen(false);
+                setSelectedIds(new Set());
+            }}
+            albums={batchAlbums}
+            providers={Array.from(batchProviders)}
+            qualities={selectedQualities}
+        />
 
         {/* Delete confirmation dialog */}
         <Dialog open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} maxWidth="xs">

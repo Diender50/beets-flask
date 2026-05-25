@@ -46,6 +46,11 @@ gui:
             # Inbox key/name/path where downloads should be written (e.g. Inbox3)
             inbox_folder: ""
             timeout_seconds: 40
+            scoring:
+                # Upload speed below which a result is penalised (bytes/s). Default 1 MB/s.
+                speed_min_bps: 1000000
+                # Queue length above which a result is penalised. Default 100.
+                queue_max: 100
 
         squidwtf:
             # Public SquidWTF qobuz API endpoint.
@@ -55,6 +60,12 @@ gui:
             timeout_seconds: 45
 
         auto_download:
+            # Minimum match score (0.0–1.0) for batch/auto downloads.
+            # Results with a score strictly below this threshold are skipped;
+            # if no provider reaches the threshold the album is not downloaded.
+            # 0.0 disables the filter (default).
+            min_score: 0.0
+
             # Quality priority list for batch/auto downloads (highest priority first).
             # Each entry is "container" or "container:spec":
             #   flac:24  — lossless 24-bit hi-res (squidwtf only)

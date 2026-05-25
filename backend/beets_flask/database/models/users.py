@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from beets_flask.database.models.base import Base
@@ -54,32 +53,28 @@ class UserInDb(Base):
         self.max_quality = max_quality
 
 
-class UserArtistFollowInDb(Base):
-    """Per-user follow state for an artist.
+class TrackedArtistInDb(Base):
+    """Global tracked-artist list shared across all users.
 
-    A row exists for every (user, artist) pair that has been introduced to the
-    system.  `is_following=True` means the user actively follows the artist;
-    `False` means the artist was introduced by someone else and the user has
-    not yet followed it.
+    `artist_name` is the primary display name (EN/FR primary alias when one
+    exists, otherwise the original MusicBrainz name).
+    `original_name` stores the raw MusicBrainz name when it differs from
+    `artist_name`; used only as a fallback for download-provider searches.
     """
 
-    __tablename__ = "user_artist_follow"
-    __table_args__ = (UniqueConstraint("user_id", "artist_name"),)
+    __tablename__ = "tracked_artist"
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
-    artist_name: Mapped[str] = mapped_column(index=True, nullable=False)
-    is_following: Mapped[bool] = mapped_column(default=False)
+    artist_name: Mapped[str] = mapped_column(unique=True, index=True, nullable=False)
+    original_name: Mapped[str | None] = mapped_column(nullable=True, default=None)
     added_at: Mapped[str] = mapped_column()  # ISO-8601
 
     def __init__(
         self,
-        user_id: str,
         artist_name: str,
-        is_following: bool = False,
         added_at: str = "",
+        original_name: str | None = None,
     ):
         super().__init__()
-        self.user_id = user_id
         self.artist_name = artist_name
-        self.is_following = is_following
+        self.original_name = original_name
         self.added_at = added_at

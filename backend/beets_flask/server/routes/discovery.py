@@ -20,22 +20,25 @@ from beets_flask.discovery.download import (
     run_slskd_download,
     run_squidwtf_download,
 )
-from beets_flask.discovery.followed_artists import (
-    follow_artist,
-    get_followed_artists,
-    is_followed,
-    unfollow_artist,
+from beets_flask.discovery.tracked_artists import (
+    add_tracked_artist,
+    get_tracked_artists,
+    get_tracked_artist,
+    is_tracked,
+    remove_tracked_artist,
 )
 from beets_flask.discovery.providers import deemix as deemix_provider
 from beets_flask.discovery.providers import slskd as slskd_provider
 from beets_flask.discovery.providers import squidwtf as squidwtf_provider
 from beets_flask.library_cache import (
     get_missing_count_map,
+    invalidate_artists_cache,
     invalidate_missing_cache_for_string,
     normalize_artist_key,
 )
 from beets_flask.logger import log
-from beets_flask.server.dependencies import CurrentUser
+from beets_flask.server.dependencies import BeetsLib, CurrentUser
+from beets_flask.server.routes.library.resources import delete_entities
 
 # ─── Helpers (inlined from server/routes/discovery) ──────────────────────────
 
@@ -180,10 +183,13 @@ def _deemix_settings() -> dict:
 
 def _slskd_settings() -> dict:
     base = ["gui", "discovery", "slskd"]
+    scoring = base + ["scoring"]
     return {
         "base_url": _cfg_str(base + ["base_url"]),
         "api_key": _cfg_str(base + ["api_key"]) or None,
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 40),
+        "speed_min_bps": _cfg_int(scoring + ["speed_min_bps"], 1_000_000),
+        "queue_max": _cfg_int(scoring + ["queue_max"], 100),
     }
 
 
@@ -217,6 +223,64 @@ def _strip_accents(value: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
+def _artist_known_names_set(
+    artist: str,
+    original_name: str | None,
+    other_aliases: list[str],
+) -> set[str]:
+    """Normalized set of all known name variants for artist-match validation."""
+    names: set[str] = {artist}
+    if original_name:
+        names.add(original_name)
+    names.update(other_aliases)
+    return {_strip_accents(n).casefold() for n in names if n}
+
+
+def _get_artist_search_fallbacks(artist_name: str) -> dict:
+    """Return {original_name: str|None, other_aliases: list[str]} for download queries.
+
+    original_name: raw MB name when artist was added under an EN/FR alias (e.g. "大貫妙子")
+    other_aliases: non-primary EN/FR aliases from the MB alias cache, excluding artist_name
+                   and original_name
+    """
+    import json as _json
+
+    result: dict = {"original_name": None, "other_aliases": []}
+    try:
+        from beets_flask.database.models.users import TrackedArtistInDb
+        from beets_flask.database.setup import session_factory
+        from beets_flask.library_cache import get_json_cache
+
+        session = session_factory()
+        try:
+            row = (
+                session.query(TrackedArtistInDb)
+                .filter(TrackedArtistInDb.artist_name == artist_name)
+                .first()
+            )
+            if row and row.original_name and row.original_name != artist_name:
+                result["original_name"] = row.original_name
+        finally:
+            session.close()
+
+        name_cached = get_json_cache(f"mb_artist_name:{artist_name.casefold()}")
+        if name_cached:
+            mbid = _json.loads(name_cached).get("mbid")
+            if mbid:
+                aliases_cached = get_json_cache(f"mb_aliases_all:{mbid}")
+                if aliases_cached:
+                    skip = {artist_name.casefold()}
+                    if result["original_name"]:
+                        skip.add(result["original_name"].casefold())
+                    result["other_aliases"] = [
+                        a for a in _json.loads(aliases_cached)
+                        if a.casefold() not in skip
+                    ]
+    except Exception:
+        pass
+    return result
+
+
 _DEFAULT_QUALITY_PRIORITY: list[str] = [
     "flac:24", "flac:16",
     "mp3:320", "opus:320", "m4a:320",
@@ -243,6 +307,17 @@ def _expand_quality_token(token: str) -> list[str]:
 def _parse_quality(quality: str) -> tuple[str, str]:
     container, _, spec = quality.strip().casefold().partition(":")
     return container, spec
+
+
+def _auto_download_min_score() -> float:
+    try:
+        cfg = get_config()
+        raw = cfg["gui"]["discovery"]["auto_download"]["min_score"].get(float)
+        if isinstance(raw, (int, float)):
+            return max(0.0, min(1.0, float(raw)))
+    except Exception:
+        pass
+    return 0.0
 
 
 def _auto_download_quality_priority() -> list[str]:
@@ -476,6 +551,8 @@ async def _find_best_match_across_providers(
         log.warning("_find_best_match: no artist or album")
         return None
 
+    min_score = _auto_download_min_score()
+
     if qualities:
         quality_priority: list[str] = []
         for q in qualities:
@@ -490,6 +567,7 @@ async def _find_best_match_across_providers(
     deemix_id: str | None = str(album_payload.get("deezer_id", "")).strip() or None
     deemix_score: float = 1.0
     deemix_max_quality = "128"
+    deemix_title: str | None = None
 
     if "deemix" in providers and dcfg["base_url"]:
         try:
@@ -511,6 +589,7 @@ async def _find_best_match_across_providers(
                     if m:
                         deemix_id = m.get("deezer_id")
                         deemix_score = float(m.get("score") or 0.0)
+                        deemix_title = str(m.get("title") or album)
                         break
                 except Exception as exc:
                     log.debug("deemix match search failed: %s", exc)
@@ -527,6 +606,7 @@ async def _find_best_match_across_providers(
             log.debug("slskd search failed: %s", exc)
 
     squid_id: str | None = str(album_payload.get("squid_album_id", "")).strip() or None
+    squid_title: str | None = None
     if "squidwtf" in providers and wcfg["base_url"] and not squid_id:
         try:
             m = await squidwtf_provider.resolve_squidwtf_match_for_album(
@@ -534,6 +614,7 @@ async def _find_best_match_across_providers(
             )
             if m:
                 squid_id = str(m.get("squid_album_id") or "").strip() or None
+                squid_title = str(m.get("title") or album)
         except Exception as exc:
             log.debug("squidwtf search failed: %s", exc)
 
@@ -566,15 +647,371 @@ async def _find_best_match_across_providers(
                 results.append((1.0, payload))
 
         if results:
-            best_score, best_payload = max(results, key=lambda x: x[0])
+            qualified = [(s, p) for s, p in results if s >= min_score]
+            if not qualified:
+                log.info(
+                    "_find_best_match: all results below min_score=%.2f for artist=%s album=%s quality=%s",
+                    min_score, artist, album, quality,
+                )
+                continue
+            best_score, best_payload = max(qualified, key=lambda x: x[0])
+            # Inject match metadata for probe-and-queue callers (stripped before scheduling).
+            best_payload["_match_score"] = best_score
+            selected_provider = best_payload.get("provider", "")
+            if selected_provider == "deemix":
+                best_payload["_result_title"] = deemix_title or album
+            elif selected_provider == "slskd":
+                candidate = best_payload.get("candidate") or {}
+                best_payload["_result_title"] = (candidate.get("folder", "").rsplit("/", 1)[-1]) or album
+            elif selected_provider == "squidwtf":
+                best_payload["_result_title"] = squid_title or album
+            else:
+                best_payload["_result_title"] = album
             log.info(
                 "_find_best_match: selected provider=%s quality=%s score=%.2f",
-                best_payload.get("provider"), quality, best_score,
+                selected_provider, quality, best_score,
             )
             return best_payload
 
     log.warning("_find_best_match: no match found for artist=%s album=%s", artist, album)
     return None
+
+
+# ─── Module-level probe functions (shared by download_options + probe_and_queue) ─
+
+
+async def _probe_deemix(
+    artist: str,
+    album: str,
+    original_name: str | None,
+    other_aliases: list[str],
+    dcfg: dict,
+) -> list[dict]:
+    if not dcfg["base_url"]:
+        return []
+    try:
+        account_quality = await deemix_provider.resolve_quality_from_arl(
+            base_url=dcfg["base_url"], timeout_seconds=dcfg["timeout_seconds"],
+            auth_header=dcfg["auth_header"], arl=dcfg["arl"],
+        )
+    except Exception:
+        account_quality = None
+
+    async def _try(q_artist: str) -> dict | None:
+        names = [q_artist]
+        stripped = _strip_accents(q_artist)
+        if stripped != q_artist:
+            names.append(stripped)
+        for n in names:
+            try:
+                m = await deemix_provider.resolve_deezer_match_for_album(
+                    artist=n, album=album, timeout_seconds=dcfg["timeout_seconds"]
+                )
+                if m:
+                    return m
+            except Exception:
+                pass
+        return None
+
+    primary_task = asyncio.create_task(_try(artist))
+    orig_task = asyncio.create_task(_try(original_name)) if original_name else None
+    primary_match = await primary_task
+    orig_match = await orig_task if orig_task else None
+
+    log.info("probe_deemix artist=%r found=%s", artist, bool(primary_match))
+    if original_name:
+        log.info("probe_deemix original_name=%r found=%s", original_name, bool(orig_match))
+
+    match = primary_match or orig_match
+    if not match:
+        for alias in other_aliases:
+            match = await _try(alias)
+            log.info("probe_deemix alias=%r found=%s", alias, bool(match))
+            if match:
+                break
+
+    if not match:
+        return []
+    known = _artist_known_names_set(artist, original_name, other_aliases)
+    returned_artist = str(match.get("artist") or "")
+    artist_ok = _strip_accents(returned_artist).casefold() in known
+    if not artist_ok:
+        log.info("probe_deemix artist mismatch returned=%r known=%r", returned_artist, sorted(known))
+    aq = account_quality or {}
+    return [_download_suggestion_summary(
+        provider="deemix",
+        score=float(match.get("score") or 0.0) if artist_ok else 0.0,
+        title=str(match.get("title") or album),
+        artist=returned_artist or artist,
+        details={
+            "deezer_id": match.get("deezer_id"),
+            "trackCount": match.get("track_count"),
+            "container": aq.get("container") or match.get("container"),
+            "kbps": aq.get("kbps") if aq.get("kbps") is not None else match.get("kbps"),
+            "url": f"https://www.deezer.com/album/{match.get('deezer_id')}",
+        },
+    )]
+
+
+async def _probe_slskd(
+    artist: str,
+    album: str,
+    original_name: str | None,
+    other_aliases: list[str],
+    scfg: dict,
+    expected_track_count: int | None = None,
+    expected_tracks: list[dict] | None = None,
+    run_original_name: bool = True,
+    original_name_only: bool = False,
+) -> list[dict]:
+    """Search slskd for album candidates.
+
+    Modes (mutually exclusive flags):
+    - default (run_original_name=True): primary alias → original_name → combined; used by probe_and_queue
+    - run_original_name=False: primary alias only, returns fast; used by download_options phase 1
+    - original_name_only=True: original_name only, no primary; used by download_options phase 2
+    """
+    if not scfg["base_url"]:
+        return []
+
+    async def _try(q_artist: str) -> list:
+        return await slskd_provider.search_album(
+            base_url=scfg["base_url"], api_key=scfg["api_key"],
+            artist=q_artist, album=album, timeout_seconds=scfg["timeout_seconds"],
+        )
+
+    if original_name_only:
+        if not original_name or original_name.casefold() == artist.casefold():
+            return []
+        candidates = await _try(original_name)
+        log.info("probe_slskd original_name_only=%r candidates=%d", original_name, len(candidates))
+    else:
+        candidates = await _try(artist)
+        log.info("probe_slskd artist=%r candidates=%d", artist, len(candidates))
+        if run_original_name and original_name and original_name.casefold() != artist.casefold():
+            await asyncio.sleep(1)
+            orig_candidates = await _try(original_name)
+            log.info("probe_slskd original_name=%r candidates=%d", original_name, len(orig_candidates))
+            seen = {(c.get("username"), c.get("folder")) for c in candidates}
+            for c in orig_candidates:
+                key = (c.get("username"), c.get("folder"))
+                if key not in seen:
+                    candidates.append(c)
+                    seen.add(key)
+        if not candidates:
+            for alias in other_aliases:
+                candidates = await _try(alias)
+                log.info("probe_slskd alias=%r candidates=%d", alias, len(candidates))
+                if candidates:
+                    break
+
+    ranked = slskd_provider.rank_candidates(
+        candidates,
+        artist_hint=artist,
+        album_hint=album,
+        expected_track_count=expected_track_count,
+        expected_tracks=expected_tracks,
+        speed_min_bps=scfg.get("speed_min_bps", 1_000_000),
+        queue_max=scfg.get("queue_max", 100),
+    )
+    return [
+        _download_suggestion_summary(
+            provider="slskd",
+            score=float(slskd_provider.score_candidate(
+                c,
+                artist_hint=artist,
+                album_hint=album,
+                expected_track_count=expected_track_count,
+                expected_tracks=expected_tracks,
+                speed_min_bps=scfg.get("speed_min_bps", 1_000_000),
+                queue_max=scfg.get("queue_max", 100),
+            )),
+            title=(c.get("folder", "").rsplit("/", 1)[-1] or album),
+            artist=artist,
+            details={
+                "searchId": c.get("searchId"), "username": c.get("username"),
+                "folder": c.get("folder"), "fileCount": len(c.get("files") or []),
+                "audioFileCount": c.get("audioFileCount"), "meanAudioBitrateKbps": c.get("meanAudioBitrateKbps"),
+                "extension": c.get("extension"), "sampleRate": c.get("sampleRate"),
+                "bitDepth": c.get("bitDepth"), "uploadSpeed": c.get("uploadSpeed"),
+                "queueLength": c.get("queueLength"), "hasFreeUploadSlot": c.get("hasFreeUploadSlot"),
+                "totalSize": c.get("totalSize"), "candidate": c,
+            },
+        )
+        for c in ranked[:20]
+    ]
+
+
+async def _probe_squidwtf(
+    artist: str,
+    album: str,
+    original_name: str | None,
+    other_aliases: list[str],
+    wcfg: dict,
+) -> list[dict]:
+    if not wcfg["base_url"]:
+        return []
+
+    async def _try(q_artist: str) -> dict | None:
+        return await squidwtf_provider.resolve_squidwtf_match_for_album(
+            artist=q_artist, album=album,
+            timeout_seconds=min(20, wcfg["timeout_seconds"]), base_url=wcfg["base_url"],
+        )
+
+    primary_task = asyncio.create_task(_try(artist))
+    orig_task = asyncio.create_task(_try(original_name)) if original_name else None
+    primary_match = await primary_task
+    orig_match = await orig_task if orig_task else None
+
+    log.info("probe_squidwtf artist=%r found=%s", artist, bool(primary_match))
+    if original_name:
+        log.info("probe_squidwtf original_name=%r found=%s", original_name, bool(orig_match))
+
+    match = primary_match or orig_match
+    if not match:
+        for alias in other_aliases:
+            match = await _try(alias)
+            log.info("probe_squidwtf alias=%r found=%s", alias, bool(match))
+            if match:
+                break
+
+    if not match:
+        return []
+    known = _artist_known_names_set(artist, original_name, other_aliases)
+    returned_artist = str(match.get("artist") or "")
+    artist_ok = _strip_accents(returned_artist).casefold() in known
+    if not artist_ok:
+        log.info("probe_squidwtf artist mismatch returned=%r known=%r", returned_artist, sorted(known))
+    squid_album_id = match.get("squid_album_id")
+    base_score = float(match.get("score") or 0.0) if artist_ok else 0.0
+    results = []
+    for q_alias, q_code in [("flac:hires", "27"), ("flac:16", "6"), ("mp3:320", "5")]:
+        qi = squidwtf_provider.quality_label_to_display(q_alias)
+        results.append(_download_suggestion_summary(
+            provider="squidwtf", score=base_score,
+            title=str(match.get("title") or album), artist=returned_artist or artist,
+            details={
+                "squid_album_id": squid_album_id, "trackCount": match.get("track_count"),
+                "quality": q_code, "container": qi.get("container"), "kbps": qi.get("kbps"),
+                "source": "qobuz",
+                "url": f"{wcfg['base_url'].rstrip('/')}/api/get-album?album_id={squid_album_id}",
+            },
+        ))
+    return results
+
+
+# ─── Auto-selection helpers (probe_and_queue) ────────────────────────────────
+
+
+def _suggestion_matches_quality(sugg: dict, quality: str) -> bool:
+    """Return True if a DownloadSuggestion can fulfil the given quality token."""
+    provider = str(sugg.get("provider", ""))
+    details = sugg.get("details") or {}
+    container, spec = _parse_quality(quality)
+
+    if provider == "squidwtf":
+        code_map = {"27": "flac:24", "6": "flac:16", "5": "mp3:320"}
+        sugg_token = code_map.get(str(details.get("quality", "")))
+        if sugg_token is None:
+            return False
+        sc, ss = _parse_quality(sugg_token)
+        return sc == container and ss == spec
+
+    if provider == "deemix":
+        sc = str(details.get("container") or "").casefold()
+        if container == "flac":
+            if sc not in ("flac", "alac", "wav", "aiff"):
+                return False
+            if spec == "24":
+                kbps = details.get("kbps")
+                return bool(kbps) and float(kbps) > 1600
+            return True
+        if sc != container:
+            return False
+        kbps = details.get("kbps")
+        if kbps is not None and spec:
+            try:
+                return _lossy_tier(container, float(kbps)) >= _lossy_tier(container, float(spec))
+            except (ValueError, TypeError):
+                pass
+        return True
+
+    if provider == "slskd":
+        ext = str(details.get("extension") or "").casefold()
+        if ext == "aac":
+            ext = "m4a"
+        actual = "m4a" if container == "aac" else container
+        if ext != actual:
+            return False
+        if container == "flac":
+            if spec == "24":
+                bd = details.get("bitDepth")
+                sr = details.get("sampleRate")
+                return bool(bd and int(bd) >= 24) or bool(sr and int(sr) >= 88200)
+            return True
+        mean = details.get("meanAudioBitrateKbps")
+        if mean is not None and spec:
+            try:
+                return _lossy_tier(container, float(mean)) >= _lossy_tier(container, float(spec))
+            except (ValueError, TypeError):
+                pass
+        return True
+
+    return False
+
+
+def _auto_select_suggestion(
+    suggestions: list[dict],
+    quality_priority: list[str],
+    min_score: float,
+) -> tuple[dict, str] | tuple[None, None]:
+    """Pick best suggestion: quality tier first, then score. Returns (suggestion, quality_token)."""
+    for quality in quality_priority:
+        qualified = [
+            (float(s.get("score", 0)), s)
+            for s in suggestions
+            if _suggestion_matches_quality(s, quality) and float(s.get("score", 0)) >= min_score
+        ]
+        if qualified:
+            _, best = max(qualified, key=lambda x: x[0])
+            log.info(
+                "_auto_select: quality=%s score=%.2f provider=%s title=%r",
+                quality, float(best.get("score", 0)), best.get("provider"), best.get("title"),
+            )
+            return best, quality
+    return None, None
+
+
+def _build_schedule_payload(
+    sugg: dict,
+    artist: str,
+    album: str,
+    release_id: str | None,
+) -> dict[str, Any]:
+    """Convert a DownloadSuggestion to a _schedule_download_from_payload compatible dict."""
+    provider = str(sugg.get("provider", ""))
+    details = sugg.get("details") or {}
+    payload: dict[str, Any] = {"provider": provider, "artist": artist, "album": album}
+    if release_id:
+        payload["release_id"] = release_id
+
+    if provider == "deemix":
+        payload["deezer_id"] = str(details.get("deezer_id") or "")
+        sc = str(details.get("container") or "").casefold()
+        kbps = details.get("kbps")
+        if sc in ("flac", "alac", "wav", "aiff"):
+            payload["quality"] = "flac:24" if (kbps and float(kbps) > 1600) else "flac:16"
+        elif kbps and float(kbps) >= 256:
+            payload["quality"] = "mp3:320"
+        else:
+            payload["quality"] = "mp3:128"
+    elif provider == "squidwtf":
+        payload["squid_album_id"] = str(details.get("squid_album_id") or "")
+        payload["squid_quality"] = str(details.get("quality") or "27")
+    elif provider == "slskd":
+        payload["candidate"] = details.get("candidate")
+
+    return payload
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -593,39 +1030,141 @@ async def get_quality_priority() -> dict:
 # ─── Artist search / follow ───────────────────────────────────────────────────
 
 
-@router.get("/search/artists")
-async def search_artists(user: CurrentUser, q: str = "") -> list:
-    if not q.strip():
-        raise HTTPException(status_code=400, detail="q is required")
+def _extract_en_fr_alias(artist_data: dict) -> str | None:
+    """Return the best EN/FR primary display alias from a MusicBrainz artist object.
 
+    Priority: EN primary > FR primary > EN non-primary > FR non-primary.
+    """
+    aliases = artist_data.get("aliases") or []
+    en_primary: str | None = None
+    fr_primary: str | None = None
+    en_any: str | None = None
+    fr_any: str | None = None
+    for alias in aliases:
+        locale = alias.get("locale") or ""
+        alias_type = alias.get("type") or ""
+        if locale not in ("en", "fr"):
+            continue
+        if alias_type not in ("Artist name", "Legal name", ""):
+            continue
+        candidate = str(alias.get("name") or alias.get("alias") or "").strip()
+        if not candidate:
+            continue
+        is_primary = alias.get("primary") is True
+        if locale == "en":
+            if is_primary and en_primary is None:
+                en_primary = candidate
+            elif not is_primary and en_any is None:
+                en_any = candidate
+        elif locale == "fr":
+            if is_primary and fr_primary is None:
+                fr_primary = candidate
+            elif not is_primary and fr_any is None:
+                fr_any = candidate
+    return en_primary or fr_primary or en_any or fr_any
+
+
+async def _search_mb_artists(q: str) -> list[dict]:
     base_url = _musicbrainz_api_base_url()
-    url = f"{base_url}/artist?query={quote(q)}&limit=15&fmt=json"
+    url = f"{base_url}/artist?query={quote(q)}&limit=15&inc=aliases&fmt=json"
     headers = {"User-Agent": "beets-flask/1.0 ( https://github.com/pSpitzner/beets-flask )"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json(content_type=None)
+        return data.get("artists", [])
     except Exception as exc:
         log.warning("MusicBrainz artist search failed: %s", exc)
-        raise HTTPException(status_code=502, detail="MusicBrainz search failed")
+        return []
 
-    return [
-        {
+
+async def _search_deezer_artists(q: str) -> list[dict]:
+    url = f"https://api.deezer.com/search/artist?q={quote(q)}&limit=15"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                data = await resp.json(content_type=None)
+        return data.get("data", [])
+    except Exception as exc:
+        log.warning("Deezer artist search failed: %s", exc)
+        return []
+
+
+@router.get("/search/artists")
+async def search_artists(q: str = "") -> list:
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="q is required")
+
+    mb_results, deezer_results = await asyncio.gather(
+        _search_mb_artists(q),
+        _search_deezer_artists(q),
+    )
+
+    # Build Deezer lookup: normalized_name → deezer_id
+    deezer_by_name: dict[str, int] = {}
+    for d in deezer_results:
+        norm = _strip_accents(str(d.get("name") or "")).strip().casefold()
+        if norm:
+            deezer_by_name[norm] = int(d["id"])
+
+    seen_normalized: set[str] = set()
+    results: list[dict] = []
+
+    for a in mb_results:
+        alias = _extract_en_fr_alias(a)
+        original = str(a.get("name") or "").strip()
+        # Primary name is the EN/FR alias; fall back to original MB name
+        primary = alias or original
+        norm = _strip_accents(primary).strip().casefold()
+        if not primary or norm in seen_normalized:
+            continue
+        seen_normalized.add(norm)
+
+        deezer_id = deezer_by_name.pop(norm, None)
+        # Also try matching against the raw original when alias differs
+        if deezer_id is None and alias:
+            orig_norm = _strip_accents(original).strip().casefold()
+            deezer_id = deezer_by_name.pop(orig_norm, None)
+
+        results.append({
             "id": a.get("id"),
-            "name": a.get("name", ""),
+            "name": primary,
+            "original_name": original if original != primary else None,
             "sort_name": a.get("sort-name", ""),
             "disambiguation": a.get("disambiguation", ""),
             "country": a.get("country", ""),
             "score": a.get("score", 0),
-            "followed": bool(is_followed(user.id, a.get("name", ""))),
-        }
-        for a in data.get("artists", [])
-    ]
+            "tracked": is_tracked(primary),
+            "mb_url": f"https://musicbrainz.org/artist/{a['id']}" if a.get("id") else None,
+            "deezer_id": deezer_id,
+        })
+
+    # Remaining Deezer-only artists not matched to MB
+    for d in deezer_results:
+        norm = _strip_accents(str(d.get("name") or "")).strip().casefold()
+        if norm not in deezer_by_name or norm in seen_normalized:
+            continue
+        name = str(d.get("name") or "").strip()
+        seen_normalized.add(norm)
+        results.append({
+            "id": None,
+            "name": name,
+            "original_name": None,
+            "sort_name": None,
+            "disambiguation": None,
+            "country": None,
+            "score": 0,
+            "tracked": is_tracked(name),
+            "mb_url": None,
+            "deezer_id": int(d["id"]),
+        })
+
+    return results
 
 
 @router.get("/artists")
-async def list_followed_artists(user: CurrentUser) -> list:
-    artists = get_followed_artists(user.id)
+async def list_tracked_artists() -> list:
+    artists = get_tracked_artists()
     missing_map = get_missing_count_map()
     for a in artists:
         a["missing_count"] = missing_map.get(normalize_artist_key(a["name"]), 0)
@@ -633,26 +1172,59 @@ async def list_followed_artists(user: CurrentUser) -> list:
 
 
 @router.post("/artists", status_code=201)
-async def add_followed_artist(
-    user: CurrentUser,
+async def add_artist(
+    _user: CurrentUser,
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict:
     if not data or not str(data.get("name", "")).strip():
         raise HTTPException(status_code=400, detail="name is required")
     name = str(data["name"]).strip()
-    return follow_artist(user.id, name)
+    raw_orig = data.get("original_name")
+    original_name = str(raw_orig).strip() if raw_orig and str(raw_orig).strip() else None
+    return add_tracked_artist(name, original_name=original_name)
 
 
 @router.delete("/artists/{name:path}")
-async def remove_followed_artist(name: str, user: CurrentUser) -> dict:
-    unfollow_artist(user.id, name)
-    invalidate_missing_cache_for_string(name)
-    return {"ok": True}
+async def remove_artist(name: str, lib: BeetsLib, _user: CurrentUser) -> dict:
+    """Remove artist globally: delete all beets library albums then drop tracking row."""
+    tracked = get_tracked_artist(name)
+    names_to_search = [name]
+    if tracked and tracked.get("original_name"):
+        names_to_search.append(tracked["original_name"])
+
+    # Collect albums by all name variants
+    albums_seen: set[int] = set()
+    albums_to_delete = []
+    normalized_variants = {n.strip().casefold() for n in names_to_search}
+    for variant in names_to_search:
+        with lib.transaction() as tx:
+            rows = tx.query("SELECT id FROM albums WHERE instr(albumartist, ?) > 0", (variant,))
+        for row in rows:
+            if row[0] in albums_seen:
+                continue
+            album = lib.get_album(row[0])
+            if album is None:
+                continue
+            albumartist = str(getattr(album, "albumartist", "") or "").strip().casefold()
+            if albumartist in normalized_variants:
+                albums_seen.add(row[0])
+                albums_to_delete.append(album)
+
+    if albums_to_delete:
+        delete_entities(albums_to_delete, delete_files=True)
+
+    remove_tracked_artist(name)
+
+    for n in names_to_search:
+        invalidate_missing_cache_for_string(n)
+    invalidate_artists_cache()
+
+    return {"ok": True, "albums_deleted": len(albums_to_delete)}
 
 
 @router.get("/artists/{name:path}/status")
-async def followed_artist_status(name: str, user: CurrentUser) -> dict:
-    return {"name": name, "followed": is_followed(user.id, name)}
+async def tracked_artist_status(name: str) -> dict:
+    return {"name": name, "tracked": is_tracked(name)}
 
 
 # ─── Downloads ────────────────────────────────────────────────────────────────
@@ -723,6 +1295,140 @@ async def start_download_batch(data: dict[str, Any] = Body(default_factory=dict)
     )
 
 
+@router.post("/download/probe-and-queue")
+async def probe_and_queue(data: dict[str, Any] = Body(default_factory=dict)):
+    """Probe providers and queue the best match for a single album.
+
+    Returns ``{"status": "queued"|"not_found"|"error", "provider"?, "score"?, "result_title"?, "job_id"?}``.
+    """
+    if not data:
+        raise HTTPException(status_code=400, detail="request body is required")
+
+    artist = str(data.get("artist", "")).strip()
+    album = str(data.get("album", "")).strip()
+    if not artist and not album:
+        raise HTTPException(status_code=400, detail="artist or album required")
+
+    providers_raw = data.get("providers", [])
+    providers = [str(p).strip().casefold() for p in (providers_raw if isinstance(providers_raw, list) else [])]
+    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf")] or ["deemix", "slskd", "squidwtf"]
+
+    qualities_raw = data.get("qualities") or None
+    qualities: list[str] | None = None
+    if isinstance(qualities_raw, list) and qualities_raw:
+        qualities = [str(q).strip() for q in qualities_raw if str(q).strip()]
+
+    release_id = str(data.get("release_id", "")).strip() or None
+    _etr = data.get("expected_tracks")
+    expected_tracks: list[dict] | None = (
+        [t for t in _etr if isinstance(t, dict)] if isinstance(_etr, list) and _etr else None
+    )
+
+    fallbacks = _get_artist_search_fallbacks(artist)
+    original_name: str | None = fallbacks["original_name"]
+    other_aliases: list[str] = fallbacks["other_aliases"]
+
+    dcfg = _deemix_settings()
+    scfg = _slskd_settings()
+    wcfg = _squidwtf_settings()
+
+    # Run all selected providers in parallel; wait for ALL before selecting.
+    provider_tasks: list[tuple[str, asyncio.Task]] = []
+    if "slskd" in providers:
+        provider_tasks.append(("slskd", asyncio.create_task(
+            _probe_slskd(
+                artist, album, original_name, other_aliases, scfg,
+                expected_tracks=expected_tracks,
+            )
+        )))
+    if "deemix" in providers:
+        provider_tasks.append(("deemix", asyncio.create_task(
+            _probe_deemix(artist, album, original_name, other_aliases, dcfg)
+        )))
+    if "squidwtf" in providers:
+        provider_tasks.append(("squidwtf", asyncio.create_task(
+            _probe_squidwtf(artist, album, original_name, other_aliases, wcfg)
+        )))
+
+    all_suggestions: list[dict] = []
+    for pname, task in provider_tasks:
+        try:
+            all_suggestions += await task
+        except Exception as exc:
+            log.warning("probe_and_queue %s failed: %r", pname, exc)
+
+    if qualities:
+        quality_priority: list[str] = []
+        for q in qualities:
+            quality_priority.extend(_expand_quality_token(q))
+    else:
+        quality_priority = _auto_download_quality_priority()
+
+    min_score = _auto_download_min_score()
+    best_sugg, best_quality = _auto_select_suggestion(all_suggestions, quality_priority, min_score)
+
+    from fastapi.responses import JSONResponse
+    if best_sugg is None:
+        best_rejected: dict[str, Any] | None = None
+        if all_suggestions:
+            # Quality-first, then score — same as _auto_select_suggestion but without min_score.
+            best_overall: dict | None = None
+            best_rej_quality = ""
+            for quality in quality_priority:
+                qualified = [
+                    (float(s.get("score", 0)), s)
+                    for s in all_suggestions
+                    if _suggestion_matches_quality(s, quality)
+                ]
+                if qualified:
+                    _, best_overall = max(qualified, key=lambda x: x[0])
+                    best_rej_quality = quality
+                    break
+            if best_overall is None:
+                best_overall = max(all_suggestions, key=lambda s: float(s.get("score", 0)))
+            best_rejected = {
+                "provider": str(best_overall.get("provider", "")),
+                "score": float(best_overall.get("score", 0.0)),
+                "title": str(best_overall.get("title", album)),
+                "quality": best_rej_quality,
+                "details": best_overall.get("details") or {},
+            }
+        content: dict[str, Any] = {"status": "not_found", "artist": artist, "album": album}
+        if best_rejected:
+            content["best_rejected"] = best_rejected
+        return JSONResponse(content=content, status_code=200)
+
+    schedule_payload = _build_schedule_payload(best_sugg, artist, album, release_id)
+    job_or_error, status = await _schedule_download_from_payload(schedule_payload)
+
+    provider_name = str(best_sugg.get("provider", ""))
+    match_score = float(best_sugg.get("score", 0.0))
+    result_title = str(best_sugg.get("title", album))
+
+    if 200 <= status < 300:
+        return JSONResponse(
+            content={
+                "status": "queued",
+                "provider": provider_name,
+                "score": match_score,
+                "result_title": result_title,
+                "quality": best_quality or "",
+                "job_id": job_or_error.get("job_id"),
+            },
+            status_code=202,
+        )
+    return JSONResponse(
+        content={
+            "status": "error",
+            "provider": provider_name,
+            "score": match_score,
+            "result_title": result_title,
+            "error": str(job_or_error.get("error", "Download scheduling failed")),
+        },
+        status_code=status,
+    )
+
+
 @router.post("/download/options")
 async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
     if not data:
@@ -738,6 +1444,10 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
             expected_track_count = int(_etc)
     except (TypeError, ValueError):
         pass
+    _etr = data.get("expected_tracks")
+    expected_tracks: list[dict] | None = (
+        [t for t in _etr if isinstance(t, dict)] if isinstance(_etr, list) and _etr else None
+    )
 
     if not artist and not album:
         raise HTTPException(status_code=400, detail="artist or album required")
@@ -747,106 +1457,42 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
     wcfg = _squidwtf_settings()
-
-    # Probe functions defined as closures
-    async def probe_deemix():
-        if not dcfg["base_url"]:
-            return []
-        account_quality = await deemix_provider.resolve_quality_from_arl(
-            base_url=dcfg["base_url"], timeout_seconds=dcfg["timeout_seconds"],
-            auth_header=dcfg["auth_header"], arl=dcfg["arl"],
-        )
-        query_attempts = [(artist, album)]
-        fa, fb = _strip_accents(artist), _strip_accents(album)
-        if (fa, fb) != (artist, album):
-            query_attempts.append((fa, fb))
-
-        match = None
-        for q_artist, q_album in query_attempts:
-            try:
-                match = await deemix_provider.resolve_deezer_match_for_album(
-                    artist=q_artist, album=q_album, timeout_seconds=dcfg["timeout_seconds"]
-                )
-            except Exception:
-                pass
-            if match:
-                break
-
-        if not match:
-            return []
-        return [_download_suggestion_summary(
-            provider="deemix", score=float(match.get("score") or 0.0),
-            title=str(match.get("title") or album), artist=str(match.get("artist") or artist),
-            details={"deezer_id": match.get("deezer_id"), "trackCount": match.get("track_count"),
-                     "container": (account_quality or {}).get("container") or match.get("container"),
-                     "kbps": (account_quality or {}).get("kbps") if (account_quality or {}).get("kbps") is not None else match.get("kbps"),
-                     "url": f"https://www.deezer.com/album/{match.get('deezer_id')}"},
-        )]
-
-    async def probe_slskd():
-        if not scfg["base_url"]:
-            return []
-        candidates = await slskd_provider.search_album(
-            base_url=scfg["base_url"], api_key=scfg["api_key"],
-            artist=artist, album=album, timeout_seconds=scfg["timeout_seconds"],
-        )
-        ranked = slskd_provider.rank_candidates(candidates, album_hint=album, expected_track_count=expected_track_count)
-        return [
-            _download_suggestion_summary(
-                provider="slskd", score=float(slskd_provider.score_candidate(c, album_hint=album, expected_track_count=expected_track_count)),
-                title=(c.get("folder", "").rsplit("/", 1)[-1] or album), artist=artist,
-                details={"searchId": c.get("searchId"), "username": c.get("username"),
-                         "folder": c.get("folder"), "fileCount": len(c.get("files") or []),
-                         "audioFileCount": c.get("audioFileCount"), "meanAudioBitrateKbps": c.get("meanAudioBitrateKbps"),
-                         "extension": c.get("extension"), "sampleRate": c.get("sampleRate"),
-                         "bitDepth": c.get("bitDepth"), "uploadSpeed": c.get("uploadSpeed"),
-                         "queueLength": c.get("queueLength"), "hasFreeUploadSlot": c.get("hasFreeUploadSlot"),
-                         "totalSize": c.get("totalSize"), "candidate": c},
-            )
-            for c in ranked[:20]
-        ]
-
-    async def probe_squidwtf():
-        if not wcfg["base_url"]:
-            return []
-        match = await squidwtf_provider.resolve_squidwtf_match_for_album(
-            artist=artist, album=album, timeout_seconds=min(20, wcfg["timeout_seconds"]), base_url=wcfg["base_url"],
-        )
-        if not match:
-            return []
-        squid_album_id = match.get("squid_album_id")
-        results = []
-        for q_alias, q_code in [("flac:hires", "27"), ("flac:16", "6"), ("mp3:320", "5")]:
-            qi = squidwtf_provider.quality_label_to_display(q_alias)
-            results.append(_download_suggestion_summary(
-                provider="squidwtf", score=float(match.get("score") or 0.0),
-                title=str(match.get("title") or album), artist=str(match.get("artist") or artist),
-                details={"squid_album_id": squid_album_id, "trackCount": match.get("track_count"),
-                         "quality": q_code, "container": qi.get("container"), "kbps": qi.get("kbps"),
-                         "source": "qobuz", "url": f"{wcfg['base_url'].rstrip('/')}/api/get-album?album_id={squid_album_id}"},
-            ))
-        return results
+    _fallbacks = _get_artist_search_fallbacks(artist)
+    artist_original_name: str | None = _fallbacks["original_name"]
+    artist_other_aliases: list[str] = _fallbacks["other_aliases"]
 
     deemix_opts = slskd_opts = squidwtf_opts = []
     if provider_filter == "deemix":
         try:
-            deemix_opts = await probe_deemix()
+            deemix_opts = await _probe_deemix(artist, album, artist_original_name, artist_other_aliases, dcfg)
         except Exception as exc:
             log.warning("probe_deemix failed: %r", exc)
     elif provider_filter == "slskd":
+        extended = bool(data.get("extended"))
         try:
-            slskd_opts = await probe_slskd()
+            slskd_opts = await _probe_slskd(
+                artist, album, artist_original_name, artist_other_aliases, scfg,
+                expected_track_count=expected_track_count,
+                expected_tracks=expected_tracks,
+                run_original_name=False,
+                original_name_only=extended,
+            )
         except Exception as exc:
             log.warning("probe_slskd failed: %r", exc)
     elif provider_filter == "squidwtf":
         try:
-            squidwtf_opts = await probe_squidwtf()
+            squidwtf_opts = await _probe_squidwtf(artist, album, artist_original_name, artist_other_aliases, wcfg)
         except Exception as exc:
             log.warning("probe_squidwtf failed: %r", exc)
     else:
-        deemix_task = asyncio.create_task(probe_deemix())
-        slskd_task = asyncio.create_task(probe_slskd())
-        squidwtf_task = asyncio.create_task(probe_squidwtf())
+        deemix_task = asyncio.create_task(_probe_deemix(artist, album, artist_original_name, artist_other_aliases, dcfg))
+        slskd_task = asyncio.create_task(_probe_slskd(
+            artist, album, artist_original_name, artist_other_aliases, scfg,
+            expected_track_count=expected_track_count,
+            expected_tracks=expected_tracks,
+            run_original_name=False,
+        ))
+        squidwtf_task = asyncio.create_task(_probe_squidwtf(artist, album, artist_original_name, artist_other_aliases, wcfg))
         try:
             slskd_opts = await slskd_task
         except Exception as exc:

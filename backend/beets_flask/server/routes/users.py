@@ -1,8 +1,7 @@
-"""User management and per-user artist follow endpoints."""
+"""User management endpoints."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter
@@ -11,7 +10,6 @@ from sqlalchemy import select
 
 from beets_flask.database.models.users import (
     QUALITY_LEVELS,
-    UserArtistFollowInDb,
     UserInDb,
 )
 from beets_flask.server.auth_utils import hash_password
@@ -52,10 +50,6 @@ class UpdateUserBody(BaseModel):
     password: str | None = None
 
 
-class FollowBody(BaseModel):
-    following: bool
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -73,34 +67,6 @@ def _user_to_dict(user: UserInDb) -> dict[str, Any]:
         "max_quality": user.max_quality,
     }
 
-
-def _propagate_new_artist(
-    db: Any,
-    actor_id: str,
-    artist_name: str,
-    now: str,
-) -> None:
-    """Insert follow rows for every existing user when a new artist is introduced.
-
-    The actor gets is_following=True; all others get is_following=False so they
-    can see and choose to follow the artist independently.
-    """
-    all_users = db.execute(select(UserInDb)).scalars().all()
-    for u in all_users:
-        existing = db.execute(
-            select(UserArtistFollowInDb).where(
-                UserArtistFollowInDb.user_id == u.id,
-                UserArtistFollowInDb.artist_name == artist_name,
-            )
-        ).scalars().first()
-        if existing is None:
-            row = UserArtistFollowInDb(
-                user_id=u.id,
-                artist_name=artist_name,
-                is_following=(u.id == actor_id),
-                added_at=now,
-            )
-            db.add(row)
 
 
 # ── Admin: user CRUD ──────────────────────────────────────────────────────────
@@ -228,53 +194,3 @@ async def delete_user(
     user.is_active = False
 
 
-# ── Per-user follows ──────────────────────────────────────────────────────────
-
-
-@router.get("/users/me/follows")
-async def get_my_follows(
-    user: CurrentUser,
-    db: DbSession,
-) -> list[dict[str, Any]]:
-    rows = db.execute(
-        select(UserArtistFollowInDb).where(
-            UserArtistFollowInDb.user_id == user.id,
-        ).order_by(UserArtistFollowInDb.artist_name)
-    ).scalars().all()
-    return [
-        {
-            "artist_name": r.artist_name,
-            "is_following": r.is_following,
-            "added_at": r.added_at,
-        }
-        for r in rows
-    ]
-
-
-@router.patch("/users/me/follows/{artist_name:path}")
-async def set_follow(
-    artist_name: str,
-    body: FollowBody,
-    user: CurrentUser,
-    db: DbSession,
-) -> dict[str, Any]:
-    now = datetime.now(UTC).isoformat()
-
-    row = db.execute(
-        select(UserArtistFollowInDb).where(
-            UserArtistFollowInDb.user_id == user.id,
-            UserArtistFollowInDb.artist_name == artist_name,
-        )
-    ).scalars().first()
-
-    if row is None:
-        if body.following:
-            # New artist being introduced — propagate to all users
-            _propagate_new_artist(db, user.id, artist_name, now)
-        else:
-            # Unfollowing something that was never tracked — no-op
-            return {"artist_name": artist_name, "is_following": False}
-    else:
-        row.is_following = body.following
-
-    return {"artist_name": artist_name, "is_following": body.following}

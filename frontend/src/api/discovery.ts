@@ -14,53 +14,66 @@ export const qualityPriorityQueryOptions = () =>
         staleTime: Infinity,
     });
 
-/* ─────────────────────── Followed Artists ──────────────────────── */
+/* ─────────────────────── Tracked Artists ───────────────────────── */
 
-export interface FollowedArtist {
+export interface TrackedArtist {
     name: string;
     added_at: string;
     missing_count?: number;
+    /** Original MusicBrainz name when it differs from the EN/FR alias stored in `name`. */
+    original_name?: string | null;
 }
 
-export const followedArtistsQueryOptions = () =>
+export const trackedArtistsQueryOptions = () =>
     queryOptions({
-        queryKey: ['followedArtists'],
-        queryFn: async (): Promise<FollowedArtist[]> => {
+        queryKey: ['trackedArtists'],
+        queryFn: async (): Promise<TrackedArtist[]> => {
             const response = await fetch('/discovery/artists');
             if (!response.ok) return [];
             return response.json();
         },
     });
 
-export async function followArtist(name: string): Promise<FollowedArtist> {
+export async function addTrackedArtist(name: string, original_name?: string | null): Promise<TrackedArtist> {
     const response = await fetch('/discovery/artists', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, ...(original_name ? { original_name } : {}) }),
     });
     if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || 'Follow request failed');
+        throw new Error(text || 'Add artist request failed');
     }
     return response.json();
 }
 
-export async function unfollowArtist(name: string): Promise<void> {
-    await fetch(`/discovery/artists/${encodeURIComponent(name)}`, {
+export async function removeTrackedArtist(name: string): Promise<{ ok: boolean; albums_deleted: number }> {
+    const response = await fetch(`/discovery/artists/${encodeURIComponent(name)}`, {
         method: 'DELETE',
     });
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Remove artist failed (${response.status}): ${text}`);
+    }
+    return response.json();
 }
 
-/* ───────────────────── Deezer Artist Search ────────────────────── */
+/* ──────────────────── Artist Search (MB + Deezer) ──────────────── */
 
 export interface ArtistSearchResult {
-    id: string;
+    /** MusicBrainz UUID, or null for Deezer-only results. */
+    id: string | null;
+    /** Primary display name: EN/FR primary alias when available, otherwise original MB name. */
     name: string;
-    sort_name?: string;
-    disambiguation?: string;
-    country?: string;
+    /** Original MusicBrainz name when it differs from `name`. Download search fallback only. */
+    original_name?: string | null;
+    sort_name?: string | null;
+    disambiguation?: string | null;
+    country?: string | null;
     score?: number;
-    followed: boolean;
+    tracked: boolean;
+    mb_url?: string | null;
+    deezer_id?: number | null;
 }
 
 export async function searchArtists(q: string): Promise<ArtistSearchResult[]> {
@@ -119,6 +132,9 @@ export async function getDownloadSuggestions(opts: {
     artist: string;
     provider?: 'deemix' | 'slskd' | 'squidwtf';
     expected_track_count?: number | null;
+    expected_tracks?: Array<{ title: string; duration?: number }>;
+    /** Phase 2 for slskd: search with original_name only (primary already returned). */
+    extended?: boolean;
     signal?: AbortSignal;
 }): Promise<DownloadSuggestionsResponse> {
     const controller = new AbortController();
@@ -139,6 +155,8 @@ export async function getDownloadSuggestions(opts: {
                 artist: opts.artist,
                 provider: opts.provider,
                 ...(opts.expected_track_count != null ? { expected_track_count: opts.expected_track_count } : {}),
+                ...(opts.expected_tracks?.length ? { expected_tracks: opts.expected_tracks } : {}),
+                ...(opts.extended ? { extended: true } : {}),
             }),
             signal: controller.signal,
         });
@@ -220,6 +238,52 @@ export async function getDownloadJob(jobId: string): Promise<DownloadJob> {
     if (!response.ok) {
         const text = await response.text().catch(() => response.statusText);
         throw new Error(`Load download job failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+
+export interface BestRejected {
+    provider: string;
+    score: number;
+    title: string;
+    quality: string;
+    details: Record<string, unknown>;
+}
+
+export interface ProbeAndQueueResult {
+    status: 'queued' | 'not_found' | 'error';
+    provider?: string;
+    score?: number;
+    result_title?: string;
+    quality?: string;
+    job_id?: string;
+    error?: string;
+    artist?: string;
+    album?: string;
+    best_rejected?: BestRejected;
+}
+
+export async function probeAndQueueDownload(opts: {
+    album: string;
+    artist: string;
+    providers?: Array<'deemix' | 'slskd' | 'squidwtf'>;
+    qualities?: string[];
+    release_id?: string;
+    deezer_id?: string;
+    squid_album_id?: string;
+    expected_tracks?: Array<{ title: string; duration?: number }>;
+    signal?: AbortSignal;
+}): Promise<ProbeAndQueueResult> {
+    const { signal, ...body } = opts;
+    const response = await fetch('/discovery/download/probe-and-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Probe and queue failed (${response.status}): ${text}`);
     }
     return response.json();
 }

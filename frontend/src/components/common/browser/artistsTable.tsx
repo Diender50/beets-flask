@@ -13,7 +13,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import { CheckIcon, UserRoundMinusIcon, UserRoundPlusIcon } from 'lucide-react';
+import { Trash2Icon } from 'lucide-react';
 import { Link } from '@tanstack/react-router';
 import { Artist } from '@/api/library';
 
@@ -22,10 +22,8 @@ export interface ArtistsTableProps {
     selected: Set<string>;
     onToggleSelection: (artistName: string, checked: boolean) => void;
     onToggleSelectAll: (checked: boolean, artistNames: string[]) => void;
-    onFollowArtist: (artistName: string) => void;
-    isFollowingArtist: (artistName: string) => boolean;
-    onUnfollowArtist: (artistName: string) => void;
-    isUnfollowingArtist: (artistName: string) => boolean;
+    onRemoveArtist: (artistName: string) => void;
+    isRemovingArtist: (artistName: string) => boolean;
     disableActions?: boolean;
 }
 
@@ -45,10 +43,8 @@ export function ArtistsTable({
     selected,
     onToggleSelection,
     onToggleSelectAll,
-    onFollowArtist,
-    isFollowingArtist,
-    onUnfollowArtist,
-    isUnfollowingArtist,
+    onRemoveArtist,
+    isRemovingArtist,
     disableActions = false,
 }: ArtistsTableProps) {
     const [sortField, setSortField] = useState<SortField>('artist');
@@ -149,7 +145,7 @@ export function ArtistsTable({
                             key={artist.artist}
                             component={Link}
                             to="/library/browse/artists/$artist"
-                            params={{ artist: artist.artist }}
+                            params={{ artist: artist.display_name ?? artist.artist }}
                             sx={{
                                 cursor: 'pointer',
                                 textDecoration: 'none',
@@ -175,19 +171,21 @@ export function ArtistsTable({
                                 />
                             </TableCell>
                             <TableCell sx={{ border: 'none', py: 0.75 }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+                                <Box sx={{ minWidth: 0 }}>
                                     <Typography
                                         variant="body2"
                                         sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                                     >
-                                        {artist.artist || 'Unknown Artist'}
+                                        {artist.display_name ?? artist.artist ?? 'Unknown Artist'}
                                     </Typography>
-                                    {artist.followed && (
-                                        <Tooltip title="Following">
-                                            <Box component="span" sx={{ color: 'success.main', display: 'flex', flexShrink: 0 }}>
-                                                <CheckIcon size={12} />
-                                            </Box>
-                                        </Tooltip>
+                                    {artist.display_name && (
+                                        <Typography
+                                            variant="caption"
+                                            color="text.disabled"
+                                            sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}
+                                        >
+                                            {artist.artist}
+                                        </Typography>
                                     )}
                                 </Box>
                             </TableCell>
@@ -212,30 +210,17 @@ export function ArtistsTable({
                                     e.preventDefault(); e.stopPropagation();
                                 }}
                             >
-                                {artist.followed ? (
-                                    <Tooltip title="Unfollow">
-                                        <IconButton
-                                            size="small"
-                                            color="error"
-                                            onClick={() => onUnfollowArtist(artist.artist)}
-                                            disabled={disableActions || isUnfollowingArtist(artist.artist)}
-                                            sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
-                                        >
-                                            <UserRoundMinusIcon size={14} />
-                                        </IconButton>
-                                    </Tooltip>
-                                ) : (
-                                    <Tooltip title="Follow">
-                                        <IconButton
-                                            size="small"
-                                            onClick={() => onFollowArtist(artist.artist)}
-                                            disabled={disableActions || isFollowingArtist(artist.artist)}
-                                            sx={{ opacity: 0.4, '&:hover': { opacity: 1 } }}
-                                        >
-                                            <UserRoundPlusIcon size={14} />
-                                        </IconButton>
-                                    </Tooltip>
-                                )}
+                                <Tooltip title="Remove artist">
+                                    <IconButton
+                                        size="small"
+                                        color="error"
+                                        onClick={() => onRemoveArtist(artist.artist)}
+                                        disabled={disableActions || isRemovingArtist(artist.artist)}
+                                        sx={{ opacity: 0.4, '&:hover': { opacity: 1 } }}
+                                    >
+                                        <Trash2Icon size={14} />
+                                    </IconButton>
+                                </Tooltip>
                             </TableCell>
                         </TableRow>
                     ))}

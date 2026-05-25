@@ -263,8 +263,14 @@ export interface Artist {
     last_album_added?: Date;
     first_item_added?: Date;
     first_album_added?: Date;
-    /** True when the artist is only followed (not in the beets library). */
-    followed?: boolean;
+    /** False for manually-added tracked-only artists not yet in the beets library. */
+    in_library?: boolean;
+    /** MusicBrainz artist ID. */
+    mb_artist_id?: string | null;
+    /** MusicBrainz artist page URL. */
+    mb_url?: string | null;
+    /** English display name from MusicBrainz aliases (set for non-ASCII artist names). */
+    display_name?: string | null;
 }
 
 export interface MissingAlbum {

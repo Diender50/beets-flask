@@ -46,6 +46,7 @@ dependencies = [
     "pytz",
     "python-jose[cryptography]>=3.3.0",
     "bcrypt>=4.0.0",
+    "thefuzz[speedup]>=0.22.1",
 ]
 
 [project.optional-dependencies]

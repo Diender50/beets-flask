@@ -1,6 +1,6 @@
 from .base import Base
 from .states import CandidateStateInDb, FolderInDb, MissingAlbumCacheInDb, SessionStateInDb, TaskStateInDb
-from .users import UserArtistFollowInDb, UserInDb
+from .users import TrackedArtistInDb, UserInDb
 
 __all__ = [
     "Base",
@@ -10,5 +10,5 @@ __all__ = [
     "TaskStateInDb",
     "CandidateStateInDb",
     "UserInDb",
-    "UserArtistFollowInDb",
+    "TrackedArtistInDb",
 ]

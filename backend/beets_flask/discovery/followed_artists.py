@@ -19,7 +19,9 @@ def _get_row(session, user_id: str, name: str) -> UserArtistFollowInDb | None:
     ).scalars().first()
 
 
-def _propagate_new_artist(session, actor_id: str, artist_name: str, now: str) -> None:
+def _propagate_new_artist(
+    session, actor_id: str, artist_name: str, now: str, display_name: str | None = None
+) -> None:
     all_users = session.execute(select(UserInDb)).scalars().all()
     for u in all_users:
         if _get_row(session, u.id, artist_name) is None:
@@ -28,21 +30,24 @@ def _propagate_new_artist(session, actor_id: str, artist_name: str, now: str) ->
                 artist_name=artist_name,
                 is_following=(u.id == actor_id),
                 added_at=now,
+                display_name=display_name,
             )
             session.add(row)
 
 
-def follow_artist(user_id: str, name: str) -> dict:
+def follow_artist(user_id: str, name: str, display_name: str | None = None) -> dict:
     """Follow an artist for the given user.  Propagates to all users if new."""
     now = datetime.now(UTC).isoformat()
     with db_session_factory() as session:
         row = _get_row(session, user_id, name)
         if row is None:
-            _propagate_new_artist(session, user_id, name, now)
+            _propagate_new_artist(session, user_id, name, now, display_name=display_name)
         else:
             row.is_following = True
+            if display_name:
+                row.display_name = display_name
         session.commit()
-    return {"name": name, "added_at": now}
+    return {"name": name, "added_at": now, "display_name": display_name}
 
 
 def unfollow_artist(user_id: str, name: str) -> bool:
@@ -65,7 +70,7 @@ def get_followed_artists(user_id: str) -> list[dict]:
                 UserArtistFollowInDb.is_following == True,  # noqa: E712
             ).order_by(UserArtistFollowInDb.artist_name)
         ).scalars().all()
-        return [{"name": r.artist_name, "added_at": r.added_at} for r in rows]
+        return [{"name": r.artist_name, "added_at": r.added_at, "display_name": r.display_name} for r in rows]
 
 
 def is_followed(user_id: str, name: str) -> bool:

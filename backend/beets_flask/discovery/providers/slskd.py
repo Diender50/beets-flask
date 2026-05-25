@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import re
 from typing import Any
 from urllib.parse import quote
 
 import aiohttp
+from thefuzz import fuzz
 
 from beets_flask.logger import log
 
@@ -212,74 +212,113 @@ def _flatten_responses(user_responses: list[dict[str, Any]]) -> list[dict[str, A
     return flattened
 
 
-def _folder_match_score(candidate: dict[str, Any], album_hint: str) -> float:
-    """Score how well the folder name and audio filenames match the searched album."""
-    if not album_hint:
-        return 0.5  # neutral when no hint
-
-    album_norm = _norm_text(album_hint)
-    folder = str(candidate.get("folder") or "")
-    folder_basename = folder.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    folder_score = difflib.SequenceMatcher(None, _norm_text(folder_basename), album_norm).ratio()
-
-    # Also check filenames: strip leading "NN - " / "NN." track number prefix then compare
-    files: list[dict[str, Any]] = candidate.get("files") or []
-    audio_exts = {".flac", ".mp3", ".m4a", ".ogg", ".aac", ".wav", ".aiff", ".opus", ".wma"}
-    file_scores: list[float] = []
-    for f in files:
-        fname = str(f.get("filename") or "")
-        ext = ("." + str(f.get("extension") or "")).lower().rstrip(".")
-        if ext not in audio_exts:
+def _audio_file_entries(candidate: dict[str, Any]) -> list[tuple[str, float]]:
+    """Return (normalised_basename, duration_seconds) for each audio file in candidate."""
+    entries: list[tuple[str, float]] = []
+    for f in candidate.get("files") or []:
+        if not _is_audio_file(str(f.get("extension") or "")):
             continue
+        fname = str(f.get("filename") or "")
         base = fname.replace("\\", "/").rsplit("/", 1)[-1]
-        # Strip extension
         base = base.rsplit(".", 1)[0] if "." in base else base
-        # Strip leading track number prefix e.g. "01 - ", "01. ", "1 "
         base = re.sub(r"^\d{1,3}[\s.\-]+", "", base).strip()
         if base:
-            file_scores.append(difflib.SequenceMatcher(None, _norm_text(base), album_norm).ratio())
-
-    file_avg = sum(file_scores) / len(file_scores) if file_scores else 0.0
-    return folder_score * 0.6 + file_avg * 0.4
+            entries.append((_norm_text(base), float(_parse_duration_seconds(f.get("length")))))
+    return entries
 
 
 def score_candidate(
     candidate: dict[str, Any],
     *,
+    artist_hint: str = "",
     album_hint: str = "",
     expected_track_count: int | None = None,
+    expected_tracks: list[dict[str, Any]] | None = None,
+    speed_min_bps: int = 1_000_000,
+    queue_max: int = 100,
 ) -> float:
-    """Score a Soulseek candidate based on speed, queue availability, and filename match.
+    """Score a candidate. Returns 0.0 to exclude (fewer than half expected tracks).
 
-    Returns 0.0 (excluded from ranking) when the folder has fewer than half the
-    expected number of audio tracks.
+    D = 0.30*d_folder + 0.25*d_tracks + 0.15*d_duration + 0.15*d_count
+        + 0.08*d_speed + 0.07*d_queue   (lower D = better match)
+    score = 1 - D
     """
     if expected_track_count:
         audio_count = _safe_int(candidate.get("audioFileCount"))
         if audio_count < expected_track_count / 2:
             return 0.0
 
+    # d_folder: token_sort_ratio handles "Album - Artist" inversions
+    query = _norm_text(f"{artist_hint} {album_hint}".strip()) or None
+    folder = str(candidate.get("folder") or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    s_folder = fuzz.token_sort_ratio(_norm_text(folder), query) / 100.0 if query else 0.5
+    d_folder = 1.0 - s_folder
+
+    # d_tracks + d_duration: for each expected track, find best name-match in result files,
+    # then compare duration of that matched file.
+    result_entries = _audio_file_entries(candidate)
+    if expected_tracks and result_entries:
+        name_scores: list[float] = []
+        dur_errors: list[float] = []
+        for t in expected_tracks:
+            exp_title = _norm_text(str(t.get("title") or ""))
+            if not exp_title:
+                continue
+            best_score, best_dur = 0, 0.0
+            for rb, rdur in result_entries:
+                s = fuzz.token_set_ratio(exp_title, rb)
+                if s > best_score:
+                    best_score, best_dur = s, rdur
+            name_scores.append(best_score / 100.0)
+            exp_dur = t.get("duration")
+            if exp_dur and exp_dur > 0 and best_dur > 0:
+                dur_errors.append(min(abs(exp_dur - best_dur) / max(float(exp_dur), 30.0), 1.0))
+        d_tracks = 1.0 - (sum(name_scores) / len(name_scores)) if name_scores else 0.0
+        d_duration = sum(dur_errors) / len(dur_errors) if dur_errors else 0.0
+    else:
+        d_tracks = 0.0
+        d_duration = 0.0
+
+    # d_count
+    N_a = expected_track_count
+    N_r = _safe_int(candidate.get("audioFileCount"))
+    d_count = min(abs(N_r - N_a) / N_a, 1.0) if N_a else 0.0
+
+    # d_speed: penalise upload speed below speed_min_bps
     upload_speed = _safe_int(candidate.get("uploadSpeed"))
-    has_slot = bool(candidate.get("hasFreeUploadSlot"))
+    d_speed = max(0.0, 1.0 - upload_speed / max(speed_min_bps, 1)) if speed_min_bps > 0 else 0.0
+    d_speed = min(d_speed, 1.0)
+
+    # d_queue: penalise queue length above queue_max
     queue_len = _safe_int(candidate.get("queueLength"))
+    d_queue = min(1.0, max(0.0, queue_len - queue_max) / max(queue_max, 1)) if queue_max >= 0 else 0.0
 
-    speed_score = min(upload_speed / 10_000_000.0, 1.0)
-    # queue=0+slot → 1.0; queue=1 no slot → 0.5; queue=5 → 0.17
-    queue_score = 1.0 if has_slot and queue_len == 0 else 1.0 / (1.0 + queue_len)
-    name_score = _folder_match_score(candidate, album_hint)
-
-    return speed_score * 0.40 + queue_score * 0.40 + name_score * 0.20
+    D = (0.25 * d_folder + 0.30 * d_tracks + 0.15 * d_duration
+         + 0.15 * d_count + 0.08 * d_speed + 0.07 * d_queue)
+    return 1.0 - D
 
 
 def rank_candidates(
     candidates: list[dict[str, Any]],
     *,
+    artist_hint: str = "",
     album_hint: str = "",
     expected_track_count: int | None = None,
+    expected_tracks: list[dict[str, Any]] | None = None,
+    speed_min_bps: int = 1_000_000,
+    queue_max: int = 100,
 ) -> list[dict[str, Any]]:
     scored: list[tuple[float, dict[str, Any]]] = []
     for c in candidates:
-        s = score_candidate(c, album_hint=album_hint, expected_track_count=expected_track_count)
+        s = score_candidate(
+            c,
+            artist_hint=artist_hint,
+            album_hint=album_hint,
+            expected_track_count=expected_track_count,
+            expected_tracks=expected_tracks,
+            speed_min_bps=speed_min_bps,
+            queue_max=queue_max,
+        )
         if s > 0.0:
             scored.append((s, c))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -305,7 +344,10 @@ async def search_album(
     query = f"{artist} {album}".strip()
     log.info("slskd search: %r", query)
 
-    create_timeout = aiohttp.ClientTimeout(total=15)
+    # create_timeout scales with the caller's budget so a busy event loop
+    # (many concurrent HTTP requests in the same process) doesn't fire before
+    # the coroutine has had a chance to run.
+    create_timeout = aiohttp.ClientTimeout(total=max(20, timeout_seconds))
     async with aiohttp.ClientSession(headers=headers) as session:
         create_url = f"{base_url.rstrip('/')}/api/v0/searches"
         async with session.post(create_url, json={"searchText": query}, timeout=create_timeout) as resp:
@@ -320,51 +362,69 @@ async def search_album(
         log.info("slskd search id: %s", search_id)
         status_url = f"{base_url.rstrip('/')}/api/v0/searches/{quote(str(search_id))}"
         responses_url = f"{status_url}/responses"
+        del_url = status_url
 
         poll_timeout = aiohttp.ClientTimeout(total=10)
         # Each poll sleeps 2s; cap total wall time to timeout_seconds
         max_polls = max(4, timeout_seconds // 2)
         completed = False
-        for attempt in range(max_polls):
-            await asyncio.sleep(2)
-            try:
-                async with session.get(status_url, timeout=poll_timeout) as r:
-                    status_body = await r.json(content_type=None)
-                state = str(status_body.get("state", ""))
-                rc = _safe_int(status_body.get("responseCount"))
-                if "Completed" in state or "Stopped" in state or "TimedOut" in state:
-                    completed = True
-                log.debug(
-                    "slskd poll %d/%d state=%s responses=%d completed=%s",
-                    attempt + 1, max_polls, state, rc, completed,
-                )
-                # Fetch as soon as we have any responses — don't wait for search to complete.
-                # Partial results (search still running) are far better than timing out with 0.
-                if rc and rc > 0:
-                    async with session.get(responses_url, timeout=poll_timeout) as r2:
-                        user_responses = await r2.json(content_type=None)
-                    if isinstance(user_responses, list) and user_responses:
-                        candidates = _flatten_responses(user_responses)
-                        for candidate in candidates:
-                            if isinstance(candidate, dict):
-                                candidate["searchId"] = str(search_id)
-                        log.info(
-                            "slskd search %s: rc=%d -> %d candidates",
-                            "completed" if completed else "partial",
-                            rc, len(candidates),
-                        )
-                        return candidates
-                    # responses endpoint returned empty despite rc > 0 — keep polling
-                    log.debug("slskd responses not ready yet (rc=%d but got empty list)", rc)
-                # If completed but rc==0, no point polling further
-                if completed:
-                    log.info("slskd search completed with rc=0 for %r", query)
-                    return []
-            except Exception as exc:
-                log.warning("slskd poll error: %s", exc)
+        result: list[dict[str, Any]] = []
+        timed_out = True
 
-    log.warning("slskd search timed out for %r", query)
-    return []
+        try:
+            for attempt in range(max_polls):
+                await asyncio.sleep(2)
+                try:
+                    async with session.get(status_url, timeout=poll_timeout) as r:
+                        status_body = await r.json(content_type=None)
+                    if not isinstance(status_body, dict):
+                        continue
+                    state = str(status_body.get("state", ""))
+                    rc = _safe_int(status_body.get("responseCount"))
+                    if "Completed" in state or "Stopped" in state or "TimedOut" in state:
+                        completed = True
+                    log.debug(
+                        "slskd poll %d/%d state=%s responses=%d completed=%s",
+                        attempt + 1, max_polls, state, rc, completed,
+                    )
+                    # Fetch as soon as we have any responses — don't wait for search to complete.
+                    # Partial results (search still running) are far better than timing out with 0.
+                    if rc and rc > 0:
+                        async with session.get(responses_url, timeout=poll_timeout) as r2:
+                            user_responses = await r2.json(content_type=None)
+                        if isinstance(user_responses, list) and user_responses:
+                            candidates = _flatten_responses(user_responses)
+                            for candidate in candidates:
+                                if isinstance(candidate, dict):
+                                    candidate["searchId"] = str(search_id)
+                            log.info(
+                                "slskd search %s: rc=%d -> %d candidates",
+                                "completed" if completed else "partial",
+                                rc, len(candidates),
+                            )
+                            result = candidates
+                            timed_out = False
+                            break
+                        # responses endpoint returned empty despite rc > 0 — keep polling
+                        log.debug("slskd responses not ready yet (rc=%d but got empty list)", rc)
+                    # If completed but rc==0, no point polling further
+                    if completed:
+                        log.info("slskd search completed with rc=0 for %r", query)
+                        timed_out = False
+                        break
+                except Exception as exc:
+                    log.warning("slskd poll error: %s", exc)
+        finally:
+            # Always delete the search to free the concurrent-search slot before returning.
+            try:
+                async with session.delete(del_url, timeout=aiohttp.ClientTimeout(total=5)):
+                    pass
+            except Exception:
+                pass
+
+    if timed_out:
+        log.warning("slskd search timed out for %r", query)
+    return result
 
 
 async def delete_search(

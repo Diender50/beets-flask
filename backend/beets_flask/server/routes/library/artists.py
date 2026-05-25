@@ -20,6 +20,7 @@ from beets_flask.library_cache import (
     get_missing_count_map,
     invalidate_artists_cache,
     invalidate_artists_list_cache,
+    invalidate_prefix,
     set_db_missing_cache,
     set_json_cache,
 )
@@ -43,6 +44,11 @@ MISSING_CACHE_TTL_SECONDS = 3600
 _MUSICBRAINZ_ID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
 )
+
+MB_ALIAS_CACHE_PREFIX = "mb_alias:"
+MB_ALL_ALIASES_CACHE_PREFIX = "mb_aliases_all:"  # JSON list [primary_first, ...]
+MB_NAME_CACHE_PREFIX = "mb_artist_name:"  # keyed by normalized artist name
+MB_ALIAS_CACHE_TTL_SECONDS = 86400  # 24 h
 
 
 def _musicbrainz_api_base_url() -> str:
@@ -164,6 +170,243 @@ def _resolve_lib(lib=None):
     if lib is None:
         raise ValueError("lib must be passed explicitly")
     return lib
+
+
+def _needs_alias_lookup(name: str) -> bool:
+    return any(ord(c) > 127 for c in name)
+
+
+def _resolve_canonical_name(artist_name: str) -> str:
+    """Resolve a display_name alias to the canonical beets artist name.
+
+    When the URL path uses the EN/FR alias (e.g. "Taeko Onuki") instead of the
+    canonical library name (e.g. "大貫妙子"), this maps it back.
+    Checks the all-artists Redis cache first, then the user_artist_follow DB.
+    Returns artist_name unchanged when no resolution is found.
+    """
+    # Scan all-artists cache for a matching display_name (fast when cache is warm)
+    cached = get_json_cache(_artists_cache_key(None))
+    if cached:
+        try:
+            q = artist_name.casefold()
+            for a in json.loads(cached):
+                dn = (a.get("display_name") or "").casefold()
+                if dn and dn == q:
+                    return str(a.get("artist") or artist_name)
+        except Exception:
+            pass
+
+    # Fallback: check tracked_artist for an original_name match
+    try:
+        from beets_flask.database.models.users import TrackedArtistInDb
+        from beets_flask.database.setup import session_factory
+
+        session = session_factory()
+        try:
+            row = (
+                session.query(TrackedArtistInDb)
+                .filter(TrackedArtistInDb.original_name == artist_name)
+                .first()
+            )
+            if row:
+                return row.artist_name
+        finally:
+            session.close()
+    except Exception:
+        pass
+
+    return artist_name
+
+
+def _get_artist_mbid_map(lib=None) -> dict[str, str]:
+    """Return {normalized_artist_name: mbid} by scanning the items table."""
+    beets_lib = _resolve_lib(lib)
+    with beets_lib.transaction() as tx:
+        rows = tx.query(
+            "SELECT artist, mb_artistid FROM items WHERE mb_artistid IS NOT NULL AND mb_artistid != ''"
+        )
+
+    result: dict[str, str] = {}
+    for artist_str, mbid_str in rows:
+        if not artist_str or not mbid_str:
+            continue
+        if ARTIST_SEPARATORS:
+            artist_names = [a.strip() for a in re.split(split_pattern_artists, str(artist_str)) if a.strip()]
+        else:
+            artist_names = [str(artist_str).strip()]
+
+        mbid_parts = re.split(r"[;,]\s*", str(mbid_str).strip())
+        valid_mbids = [m.strip() for m in mbid_parts if _MUSICBRAINZ_ID_RE.fullmatch(m.strip())]
+
+        for i, name in enumerate(artist_names):
+            key = _normalize_artist_name(name)
+            if key in result:
+                continue
+            mbid = valid_mbids[i] if i < len(valid_mbids) else (valid_mbids[0] if valid_mbids else None)
+            if mbid:
+                result[key] = mbid
+
+    return result
+
+
+def _parse_en_fr_aliases(aliases: list) -> tuple[str | None, list[str]]:
+    """Parse MB alias-list → (primary_display_name, all_en_fr_aliases_primary_first).
+
+    Returns the best display name (EN primary > FR primary > EN any > FR any)
+    and a deduplicated list of all EN/FR aliases with the primary first — for
+    use as search-query fallbacks.
+    """
+    en_primary: str | None = None
+    fr_primary: str | None = None
+    en_others: list[str] = []
+    fr_others: list[str] = []
+
+    for alias in aliases:
+        locale = alias.get("locale")
+        if locale not in ("en", "fr"):
+            continue
+        if alias.get("type") not in ("Artist name", "Legal name", None, ""):
+            continue
+        candidate = str(alias.get("alias") or alias.get("name") or "").strip()
+        if not candidate:
+            continue
+        is_primary = alias.get("primary") == "primary"
+        if locale == "en":
+            if is_primary and en_primary is None:
+                en_primary = candidate
+            elif not is_primary:
+                en_others.append(candidate)
+        elif locale == "fr":
+            if is_primary and fr_primary is None:
+                fr_primary = candidate
+            elif not is_primary:
+                fr_others.append(candidate)
+
+    display_name = en_primary or fr_primary or (en_others[0] if en_others else None) or (fr_others[0] if fr_others else None)
+
+    # Full list: primary aliases first, then all others (deduplicated, preserve order)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in ([en_primary] if en_primary else []) + ([fr_primary] if fr_primary else []) + en_others + fr_others:
+        if name and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+
+    return display_name, ordered
+
+
+def _get_mb_english_alias_cached(mbid: str) -> str | None:
+    """Return the primary EN/FR display-name alias for an MBID (Redis-cached 24 h).
+
+    Also populates the mb_aliases_all: cache with the full alias list so that
+    _get_mb_all_en_aliases_cached can serve search-fallback names without a
+    second MB API call.
+    """
+    cache_key = f"{MB_ALIAS_CACHE_PREFIX}{mbid}"
+    cached = get_json_cache(cache_key)
+    if cached is not None:
+        try:
+            val = json.loads(cached)
+            return val if isinstance(val, str) else None
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    try:
+        _configure_musicbrainz_client()
+        musicbrainzngs.set_useragent("beets-flask", "1.0", "https://github.com/pSpitzner/beets-flask")
+        result = musicbrainzngs.get_artist_by_id(mbid, includes=["aliases"])
+        artist_data = result.get("artist", {})
+        aliases = artist_data.get("alias-list", [])
+
+        result_alias, all_aliases = _parse_en_fr_aliases(aliases)
+
+        set_json_cache(cache_key, json.dumps(result_alias), MB_ALIAS_CACHE_TTL_SECONDS)
+        set_json_cache(
+            f"{MB_ALL_ALIASES_CACHE_PREFIX}{mbid}",
+            json.dumps(all_aliases),
+            MB_ALIAS_CACHE_TTL_SECONDS,
+        )
+        return result_alias
+    except Exception as exc:
+        log.debug("MB alias lookup failed mbid=%s: %s", mbid, exc)
+        set_json_cache(cache_key, json.dumps(None), 3600)
+        return None
+
+
+def _get_mb_all_en_aliases_cached(mbid: str) -> list[str]:
+    """Return all EN/FR aliases for an MBID, primary first (Redis-cached 24 h).
+
+    Falls back to triggering _get_mb_english_alias_cached when the all-aliases
+    cache is cold (the two caches are always populated together).
+    """
+    all_cache_key = f"{MB_ALL_ALIASES_CACHE_PREFIX}{mbid}"
+    cached = get_json_cache(all_cache_key)
+    if cached is not None:
+        try:
+            val = json.loads(cached)
+            return val if isinstance(val, list) else []
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Populate both caches in one MB call then re-read
+    _get_mb_english_alias_cached(mbid)
+    cached = get_json_cache(all_cache_key)
+    if cached:
+        try:
+            val = json.loads(cached)
+            return val if isinstance(val, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _get_mb_display_info(artist_name: str, mbid: str | None) -> tuple[str | None, str | None]:
+    """Return (display_name, resolved_mbid) for an artist.
+
+    For ASCII-only names returns (None, mbid) immediately.
+    For non-ASCII names: uses the known MBID if available, else searches MB by name.
+    Both lookups are Redis-cached (24 h).
+    """
+    if not _needs_alias_lookup(artist_name):
+        return (None, mbid)
+
+    # If we already have a MBID, go straight to alias lookup.
+    if mbid:
+        alias = _get_mb_english_alias_cached(mbid)
+        return (alias, mbid)
+
+    # No MBID — check the name-keyed cache first.
+    name_cache_key = f"{MB_NAME_CACHE_PREFIX}{_normalize_artist_name(artist_name)}"
+    cached = get_json_cache(name_cache_key)
+    if cached is not None:
+        try:
+            val = json.loads(cached)
+            if isinstance(val, dict):
+                return (val.get("display_name"), val.get("mbid"))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Search MB by name to resolve MBID, then fetch alias.
+    try:
+        _configure_musicbrainz_client()
+        musicbrainzngs.set_useragent("beets-flask", "1.0", "https://github.com/pSpitzner/beets-flask")
+        mbids = _search_artist_mbid_from_mb(artist_name)
+        resolved_mbid = next(iter(sorted(mbids)), None)
+
+        display_name: str | None = None
+        if resolved_mbid:
+            display_name = _get_mb_english_alias_cached(resolved_mbid)
+
+        set_json_cache(
+            name_cache_key,
+            json.dumps({"display_name": display_name, "mbid": resolved_mbid}),
+            MB_ALIAS_CACHE_TTL_SECONDS,
+        )
+        return (display_name, resolved_mbid)
+    except Exception as exc:
+        log.debug("MB name→display lookup failed name=%s: %s", artist_name, exc)
+        set_json_cache(name_cache_key, json.dumps({"display_name": None, "mbid": None}), 3600)
+        return (None, None)
 
 
 def _find_artist_mbids(artist_name: str, lib=None) -> set[str]:
@@ -357,6 +600,28 @@ def _search_artist_mbid_from_mb(artist_name: str) -> set[str]:
     return set()
 
 
+def _get_tracked_fallback_names(artist_name: str) -> list[str]:
+    """Return fallback search names for a tracked-only artist (original_name etc.)."""
+    try:
+        from beets_flask.database.models.users import TrackedArtistInDb
+        from beets_flask.database.setup import session_factory
+
+        session = session_factory()
+        try:
+            row = (
+                session.query(TrackedArtistInDb)
+                .filter(TrackedArtistInDb.artist_name == artist_name)
+                .first()
+            )
+            if row and row.original_name and row.original_name != artist_name:
+                return [row.original_name]
+        finally:
+            session.close()
+    except Exception:
+        pass
+    return []
+
+
 def _safe_int(value) -> int | None:
     try:
         if value is None or value == "":
@@ -504,12 +769,19 @@ def _best_release_tracks_for_group(release_group_id: str) -> list[dict[str, str 
 def _missing_albums_from_musicbrainz(
     artist_name: str,
     lib=None,
+    search_fallback_names: list[str] | None = None,
 ) -> list[dict[str, str | int | None]]:
     _configure_musicbrainz_client()
     artist_mbids = _find_artist_mbids(artist_name, lib=lib)
     if not artist_mbids:
-        # Artist not in beets library — search MB by name
+        # Not in library — union MBIDs from all name variants.
+        # Primary name search can return a redirect/alias MBID that differs from the
+        # canonical one used in release-group artist credits, so we always also search
+        # fallback names (e.g. original MB name for EN-aliased artists) and union the
+        # results so the first-credit filter below accepts release groups from either ID.
         artist_mbids = _search_artist_mbid_from_mb(artist_name)
+        for fallback in (search_fallback_names or []):
+            artist_mbids |= _search_artist_mbid_from_mb(fallback)
     if not artist_mbids:
         return []
 
@@ -615,9 +887,43 @@ def _missing_albums_from_musicbrainz(
     return list(missing_by_release_group.values())
 
 
+def _deezer_find_artist_id(artist_name: str, search_names: list[str]) -> int | None:
+    """Search Deezer for an artist by trying each name in search_names in order.
+
+    Returns the Deezer artist ID on the first exact name match found, or the top
+    result of the last successful search as a last resort.
+    """
+    norm_names = {_normalize_artist_name(n) for n in [artist_name] + search_names if n}
+    last_top: int | None = None
+
+    for query in (search_names or [artist_name]):
+        try:
+            search_url = (
+                "https://api.deezer.com/search/artist?q="
+                + urllib.parse.quote(query)
+                + "&limit=5"
+            )
+            with urllib.request.urlopen(search_url, timeout=8) as req:  # noqa: S310
+                search_data = json.loads(req.read())
+        except Exception:
+            continue
+
+        candidates = search_data.get("data", [])
+        if not candidates:
+            continue
+
+        last_top = candidates[0]["id"]
+        for candidate in candidates:
+            if _normalize_artist_name(candidate.get("name", "")) in norm_names:
+                return candidate["id"]
+
+    return last_top
+
+
 def _missing_albums_from_deezer(
     artist_name: str,
     owned_titles_dedup: set[str],
+    search_names: list[str] | None = None,
 ) -> dict[str, dict[str, str | int | None]]:
     """Query the Deezer public API for albums not already owned, keyed by dedup title.
 
@@ -626,21 +932,12 @@ def _missing_albums_from_deezer(
     are collapsed to the first-seen entry (first-wins keeps the canonical edition that
     Deezer returns first).  The ``mb_releasegroupid`` field is intentionally absent here;
     the caller sets it appropriately depending on whether a matching MB entry exists.
+
+    ``search_names`` is the ordered list of EN/FR aliases to try for the Deezer query
+    (primary first); falls back to ``artist_name`` when not provided.
     """
     try:
-        search_url = (
-            "https://api.deezer.com/search/artist?q="
-            + urllib.parse.quote(artist_name)
-            + "&limit=5"
-        )
-        with urllib.request.urlopen(search_url, timeout=8) as req:  # noqa: S310
-            search_data = json.loads(req.read())
-
-        artist_id: int | None = None
-        for candidate in search_data.get("data", []):
-            if _normalize_artist_name(candidate.get("name", "")) == _normalize_artist_name(artist_name):
-                artist_id = candidate["id"]
-                break
+        artist_id = _deezer_find_artist_id(artist_name, search_names or [artist_name])
 
         if not artist_id:
             return {}
@@ -716,10 +1013,26 @@ def _missing_albums_from_sources(
     - Deezer editions of the same album (Deluxe, Explicit, …) are collapsed to one
       entry before the merge step.
     """
-    mb_missing = _missing_albums_from_musicbrainz(artist_name, lib=lib)
+    fallback_names = _get_tracked_fallback_names(artist_name)
+    mb_missing = _missing_albums_from_musicbrainz(
+        artist_name, lib=lib, search_fallback_names=fallback_names or None
+    )
     owned_titles = _owned_album_titles_normalized(artist_name, lib=lib)
 
-    deezer_by_key = _missing_albums_from_deezer(artist_name, owned_titles)
+    # Build ordered EN/FR search names for Deezer (primary alias first, then fallbacks).
+    deezer_search_names: list[str] = []
+    if _needs_alias_lookup(artist_name):
+        _, resolved_mbid = _get_mb_display_info(artist_name, None)
+        if resolved_mbid:
+            deezer_search_names = _get_mb_all_en_aliases_cached(resolved_mbid)
+        else:
+            display_name, _ = _get_mb_display_info(artist_name, None)
+            if display_name:
+                deezer_search_names = [display_name]
+
+    deezer_by_key = _missing_albums_from_deezer(
+        artist_name, owned_titles, search_names=deezer_search_names or None
+    )
 
     # Enrich MB entries with Deezer data when title matches; track which Deezer
     # entries were consumed so we can emit the remainder as standalone rows.
@@ -754,6 +1067,23 @@ def _missing_albums_from_sources(
         })
 
     all_missing = enriched_mb + deezer_exclusive
+
+    # Populate track_count for MB-only albums that still have null.
+    # Deezer-sourced albums already have nb_tracks; only pure MB entries miss it.
+    # Runs once at cache-build time; result is persisted in Redis + SQLite.
+    for entry in all_missing:
+        if entry.get("track_count") is not None:
+            continue
+        rgid = entry.get("mb_releasegroupid")
+        if not rgid or str(rgid).startswith("deezer:") or str(rgid).startswith("release:"):
+            continue
+        try:
+            count = _best_release_track_count_for_group(str(rgid))
+            if count is not None:
+                entry["track_count"] = count
+        except Exception:
+            pass
+
     return sorted(
         all_missing,
         key=lambda a: (
@@ -1009,6 +1339,16 @@ async def refresh_artists_cache() -> dict:
     return {"ok": True, "cleared": cleared}
 
 
+@router.post("/artists/mb-alias-cache/refresh")
+async def refresh_mb_alias_cache() -> dict:
+    """Purge all cached MusicBrainz alias lookups (forces re-fetch on next request)."""
+    cleared_alias = invalidate_prefix(MB_ALIAS_CACHE_PREFIX)
+    cleared_name = invalidate_prefix(MB_NAME_CACHE_PREFIX)
+    # Also bust the artists list cache so display_names are recomputed immediately.
+    invalidate_artists_list_cache()
+    return {"ok": True, "cleared_alias": cleared_alias, "cleared_name": cleared_name}
+
+
 @router.get("/missing-album-tracks")
 async def missing_album_tracks(id: str = "") -> list:
     if not id:
@@ -1040,6 +1380,7 @@ async def missing_album_tracks(id: str = "") -> list:
 
 @router.get("/artists/{artist_name:path}/missing")
 async def missing_albums_by_artist(artist_name: str, lib: BeetsLib, refresh: bool = False) -> Response:
+    artist_name = _resolve_canonical_name(artist_name)
     cache_key = _missing_cache_key(artist_name)
     log.info("missing_albums request artist=%s refresh=%s", artist_name, refresh)
 
@@ -1097,6 +1438,10 @@ async def _get_artists(artist_name: str | None, lib, user_id: str) -> Response:
     if not artist_name:
         artist_name = None
 
+    # Resolve EN/FR display_name alias → canonical beets name (e.g. "Taeko Onuki" → "大貫妙子")
+    if artist_name is not None:
+        artist_name = _resolve_canonical_name(artist_name)
+
     cache_key = _artists_cache_key(artist_name)
     cached = get_json_cache(cache_key)
     if cached is not None:
@@ -1118,6 +1463,66 @@ async def _get_artists(artist_name: str | None, lib, user_id: str) -> Response:
     artists["item_count"] = artists["item_count"].fillna(0).astype(int)
     artists["total_size"] = artists["total_size"].fillna(0).astype(int)
 
+    # ── MusicBrainz enrichment: MBID dedup + EN/FR display-name alias ──────────
+    if not artists.empty:
+        if artist_name is not None:
+            # Single artist: per-artist MBID lookup then display info
+            mbids = _find_artist_mbids(artist_name, lib=lib)
+            mbid = next(iter(sorted(mbids)), None)
+            display_name, resolved_mbid = _get_mb_display_info(artist_name, mbid)
+            final_mbid = resolved_mbid or mbid
+            artists["mb_artist_id"] = final_mbid
+            artists["display_name"] = display_name
+            artists["mb_url"] = f"https://musicbrainz.org/artist/{final_mbid}" if final_mbid else None
+        else:
+            # All artists: full MBID map + merge duplicate names sharing same MBID
+            mbid_map = _get_artist_mbid_map(lib=lib)
+            artists["mb_artist_id"] = artists["artist"].apply(
+                lambda n: mbid_map.get(_normalize_artist_name(str(n)))
+            )
+
+            has_mbid = artists["mb_artist_id"].notna()
+            if has_mbid.any():
+                with_mbid = artists[has_mbid].copy()
+                without_mbid = artists[~has_mbid].copy()
+
+                # Canonical name = variant with the most albums per MBID
+                canonical_idx = with_mbid.groupby("mb_artist_id")["album_count"].idxmax()
+                canonical_names = (
+                    with_mbid.loc[canonical_idx, ["mb_artist_id", "artist"]]
+                    .set_index("mb_artist_id")["artist"]
+                )
+
+                sum_cols = [c for c in ["album_count", "item_count", "total_size"] if c in with_mbid.columns]
+                max_cols = [c for c in ["last_album_added", "last_item_added"] if c in with_mbid.columns]
+                min_cols = [c for c in ["first_album_added", "first_item_added"] if c in with_mbid.columns]
+
+                agg_kwargs: dict = {c: (c, "sum") for c in sum_cols}
+                agg_kwargs.update({c: (c, "max") for c in max_cols})
+                agg_kwargs.update({c: (c, "min") for c in min_cols})
+
+                agg = with_mbid.groupby("mb_artist_id").agg(**agg_kwargs).reset_index()
+                agg["artist"] = agg["mb_artist_id"].map(canonical_names)
+                artists = pd.concat([agg, without_mbid], ignore_index=True)
+
+            # EN/FR alias — falls back to MB name search when no local MBID
+            def _mb_enrich(row) -> "pd.Series[object]":
+                name = str(row["artist"])
+                existing_mbid = row["mb_artist_id"] if pd.notna(row["mb_artist_id"]) else None
+                dn, resolved = _get_mb_display_info(name, existing_mbid)
+                final = resolved or existing_mbid
+                return pd.Series({
+                    "display_name": dn,
+                    "mb_artist_id": final,
+                    "mb_url": f"https://musicbrainz.org/artist/{final}" if final else None,
+                })
+
+            enriched = artists.apply(_mb_enrich, axis=1)
+            artists["display_name"] = enriched["display_name"]
+            artists["mb_artist_id"] = enriched["mb_artist_id"]
+            artists["mb_url"] = enriched["mb_url"]
+    # ─────────────────────────────────────────────────────────────────────────
+
     missing_count_map = get_missing_count_map()
     artists["missing_count"] = (
         artists["artist"]
@@ -1128,16 +1533,23 @@ async def _get_artists(artist_name: str | None, lib, user_id: str) -> Response:
 
     if artist_name is not None:
         if artists.empty:
-            from beets_flask.discovery.followed_artists import is_followed
+            from beets_flask.discovery.tracked_artists import get_tracked_artist
 
-            if is_followed(user_id, artist_name):
+            tracked = get_tracked_artist(artist_name)
+            if tracked is None:
+                # Also try resolving by original_name (artist_name may be the alias used in the URL)
+                from beets_flask.discovery.tracked_artists import get_tracked_artists
+                all_tracked = {a["name"].lower(): a for a in get_tracked_artists()}
+                tracked = all_tracked.get(artist_name.lower())
+            if tracked:
                 stub = {
-                    "artist": artist_name,
+                    "artist": tracked["name"],
+                    "display_name": None,
                     "album_count": 0,
                     "item_count": 0,
                     "total_size": 0,
                     "missing_count": 0,
-                    "followed": True,
+                    "in_library": False,
                 }
                 return Response(content=json.dumps(stub), media_type="application/json")
             raise NotFoundException(f"Artist '{artist_name}' not found.")
