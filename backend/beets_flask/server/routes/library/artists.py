@@ -173,7 +173,12 @@ def _resolve_lib(lib=None):
 
 
 def _needs_alias_lookup(name: str) -> bool:
-    return any(ord(c) > 127 for c in name)
+    # Only look up MB aliases for names containing non-Latin scripts (CJK, Arabic,
+    # Hangul, Hiragana, Katakana, Thai, …). Latin-based names — including all
+    # diacritics (é, ã, ü, ñ …) — have category Ll/Lu, not Lo, so they are left
+    # as-is. This prevents legal-name aliases (e.g. "Joshua Mainnie") from
+    # replacing stage names for Latin-alphabet artists.
+    return any(unicodedata.category(c) == "Lo" for c in name)
 
 
 def _resolve_canonical_name(artist_name: str) -> str:

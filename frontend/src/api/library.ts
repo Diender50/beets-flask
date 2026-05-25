@@ -577,6 +577,9 @@ export const externalArtQueryOptions = (data_url: string) =>
             });
             return dataUrl;
         },
+        retry: 0,
+        staleTime: Infinity,
+        gcTime: 1000 * 60 * 30,
     });
 
 /* ---------------------------- Waveforms / Peaks --------------------------- */

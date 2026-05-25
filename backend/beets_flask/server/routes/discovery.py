@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import unicodedata
 from typing import Any
 from urllib.parse import quote
@@ -218,9 +219,13 @@ def _download_suggestion_summary(*, provider: str, score: float, title: str, art
     }
 
 
+_APOSTROPHE_RE = re.compile("['`´ʹʻʼʽ‘’‚‛′‵＇]")
+
+
 def _strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    no_combining = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return _APOSTROPHE_RE.sub("'", no_combining)
 
 
 def _artist_known_names_set(
@@ -960,20 +965,32 @@ def _suggestion_matches_quality(sugg: dict, quality: str) -> bool:
     return False
 
 
+# Higher value = higher priority in max() comparisons.
+_PROVIDER_PRIORITY: dict[str, int] = {"squidwtf": 2, "deemix": 1, "slskd": 0}
+
+
+def _suggestion_sort_key(s: dict) -> tuple[float, int, float]:
+    """Sort key: score, then provider priority, then slskd upload speed."""
+    score = float(s.get("score", 0))
+    prio = _PROVIDER_PRIORITY.get(str(s.get("provider", "")), 0)
+    details = s.get("details") or {}
+    upload_speed = float(details.get("uploadSpeed", 0)) if s.get("provider") == "slskd" else 0.0
+    return (score, prio, upload_speed)
+
+
 def _auto_select_suggestion(
     suggestions: list[dict],
     quality_priority: list[str],
     min_score: float,
 ) -> tuple[dict, str] | tuple[None, None]:
-    """Pick best suggestion: quality tier first, then score. Returns (suggestion, quality_token)."""
+    """Pick best suggestion: quality tier first, then score, provider, slskd speed."""
     for quality in quality_priority:
         qualified = [
-            (float(s.get("score", 0)), s)
-            for s in suggestions
+            s for s in suggestions
             if _suggestion_matches_quality(s, quality) and float(s.get("score", 0)) >= min_score
         ]
         if qualified:
-            _, best = max(qualified, key=lambda x: x[0])
+            best = max(qualified, key=_suggestion_sort_key)
             log.info(
                 "_auto_select: quality=%s score=%.2f provider=%s title=%r",
                 quality, float(best.get("score", 0)), best.get("provider"), best.get("title"),
@@ -1113,8 +1130,11 @@ async def search_artists(q: str = "") -> list:
     for a in mb_results:
         alias = _extract_en_fr_alias(a)
         original = str(a.get("name") or "").strip()
-        # Primary name is the EN/FR alias; fall back to original MB name
-        primary = alias or original
+        # Only substitute alias for non-Latin-script names (CJK, Arabic, …).
+        # Latin-based names — including diacritics — are correct as-is; aliases
+        # are typically legal names that should not replace a stage name.
+        needs_alias = any(unicodedata.category(c) == "Lo" for c in original)
+        primary = (alias if needs_alias else None) or original
         norm = _strip_accents(primary).strip().casefold()
         if not primary or norm in seen_normalized:
             continue
@@ -1371,21 +1391,20 @@ async def probe_and_queue(data: dict[str, Any] = Body(default_factory=dict)):
     if best_sugg is None:
         best_rejected: dict[str, Any] | None = None
         if all_suggestions:
-            # Quality-first, then score — same as _auto_select_suggestion but without min_score.
+            # Same as _auto_select_suggestion but without min_score filter.
             best_overall: dict | None = None
             best_rej_quality = ""
             for quality in quality_priority:
                 qualified = [
-                    (float(s.get("score", 0)), s)
-                    for s in all_suggestions
+                    s for s in all_suggestions
                     if _suggestion_matches_quality(s, quality)
                 ]
                 if qualified:
-                    _, best_overall = max(qualified, key=lambda x: x[0])
+                    best_overall = max(qualified, key=_suggestion_sort_key)
                     best_rej_quality = quality
                     break
             if best_overall is None:
-                best_overall = max(all_suggestions, key=lambda s: float(s.get("score", 0)))
+                best_overall = max(all_suggestions, key=_suggestion_sort_key)
             best_rejected = {
                 "provider": str(best_overall.get("provider", "")),
                 "score": float(best_overall.get("score", 0.0)),
