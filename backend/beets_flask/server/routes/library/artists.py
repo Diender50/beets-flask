@@ -1280,10 +1280,9 @@ def get_artists_pandas(
     else:
         df = pd.DataFrame(rows, columns=["artist", "added"])
 
-    # Split artist strings into lists and explode into separate rows
+    # Keep only the primary artist (first token before any separator).
     if len(ARTIST_SEPARATORS) > 0:
-        df["artist"] = df["artist"].str.split(split_pattern_artists)
-        df = df.explode("artist")
+        df["artist"] = df["artist"].str.split(split_pattern_artists).str[0]
 
     # Strip whitespace; drop empty strings (e.g. ", &" produces "") and NaN (NULL in DB).
     df["artist"] = df["artist"].str.strip()
