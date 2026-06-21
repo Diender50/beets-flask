@@ -47,6 +47,18 @@ export async function addTrackedArtist(name: string, original_name?: string | nu
     return response.json();
 }
 
+/** Untrack only — does NOT delete library albums. */
+export async function untrackArtist(name: string): Promise<{ ok: boolean; removed: boolean }> {
+    const response = await fetch(`/discovery/artists/${encodeURIComponent(name)}/untrack`, {
+        method: 'POST',
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Untrack failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+
 export async function removeTrackedArtist(name: string): Promise<{ ok: boolean; albums_deleted: number }> {
     const response = await fetch(`/discovery/artists/${encodeURIComponent(name)}`, {
         method: 'DELETE',

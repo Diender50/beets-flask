@@ -13,7 +13,7 @@ import {
     Tooltip,
     Typography,
 } from '@mui/material';
-import { Trash2Icon } from 'lucide-react';
+import { Heart, Trash2Icon } from 'lucide-react';
 import { Link } from '@tanstack/react-router';
 import { Artist } from '@/api/library';
 
@@ -25,6 +25,12 @@ export interface ArtistsTableProps {
     onRemoveArtist: (artistName: string) => void;
     isRemovingArtist: (artistName: string) => boolean;
     disableActions?: boolean;
+    /** Artist names (lowercase) that have unseen new-album notifications. */
+    newAlbumArtists?: Set<string>;
+    /** Artist names (lowercase) currently in the tracked list. */
+    trackedNames?: Set<string>;
+    onToggleFollow?: (artistName: string, follow: boolean) => void;
+    isFollowPending?: (artistName: string) => boolean;
 }
 
 type SortField = 'artist' | 'album_count' | 'item_count' | 'missing_count' | 'total_size';
@@ -46,6 +52,10 @@ export function ArtistsTable({
     onRemoveArtist,
     isRemovingArtist,
     disableActions = false,
+    newAlbumArtists = new Set(),
+    trackedNames = new Set(),
+    onToggleFollow,
+    isFollowPending,
 }: ArtistsTableProps) {
     const [sortField, setSortField] = useState<SortField>('artist');
     const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
@@ -171,22 +181,34 @@ export function ArtistsTable({
                                 />
                             </TableCell>
                             <TableCell sx={{ border: 'none', py: 0.75 }}>
-                                <Box sx={{ minWidth: 0 }}>
-                                    <Typography
-                                        variant="body2"
-                                        sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                                    >
-                                        {artist.display_name ?? artist.artist ?? 'Unknown Artist'}
-                                    </Typography>
-                                    {artist.display_name && (
-                                        <Typography
-                                            variant="caption"
-                                            color="text.disabled"
-                                            sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}
-                                        >
-                                            {artist.artist}
-                                        </Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+                                    {newAlbumArtists.has((artist.artist ?? '').toLowerCase()) && (
+                                        <Tooltip title="New album available">
+                                            <Box sx={{
+                                                width: 6, height: 6,
+                                                borderRadius: '50%',
+                                                bgcolor: 'error.main',
+                                                flexShrink: 0,
+                                            }} />
+                                        </Tooltip>
                                     )}
+                                    <Box sx={{ minWidth: 0 }}>
+                                        <Typography
+                                            variant="body2"
+                                            sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                        >
+                                            {artist.display_name ?? artist.artist ?? 'Unknown Artist'}
+                                        </Typography>
+                                        {artist.display_name && (
+                                            <Typography
+                                                variant="caption"
+                                                color="text.disabled"
+                                                sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}
+                                            >
+                                                {artist.artist}
+                                            </Typography>
+                                        )}
+                                    </Box>
                                 </Box>
                             </TableCell>
                             <TableCell align="right" sx={{ border: 'none', py: 0.75, '@media (max-width: 639px)': { display: 'none' } }}>
@@ -205,11 +227,27 @@ export function ArtistsTable({
                             </TableCell>
                             <TableCell
                                 align="center"
-                                sx={{ border: 'none', py: 0.75, width: 48, overflow: 'hidden', p: 0.5 }}
+                                sx={{ border: 'none', py: 0.75, width: 80, overflow: 'hidden', p: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.25 }}
                                 onClick={(e: { preventDefault: () => void; stopPropagation: () => void }) => {
                                     e.preventDefault(); e.stopPropagation();
                                 }}
                             >
+                                {onToggleFollow && (() => {
+                                    const isTracked = trackedNames.has((artist.artist ?? '').toLowerCase());
+                                    const pending = isFollowPending?.(artist.artist) ?? false;
+                                    return (
+                                        <Tooltip title={isTracked ? 'Unfollow artist' : 'Follow artist'}>
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => onToggleFollow(artist.artist, !isTracked)}
+                                                disabled={disableActions || pending}
+                                                sx={{ opacity: isTracked ? 0.9 : 0.3, '&:hover': { opacity: 1 }, color: isTracked ? 'error.main' : 'inherit' }}
+                                            >
+                                                <Heart size={14} fill={isTracked ? 'currentColor' : 'none'} />
+                                            </IconButton>
+                                        </Tooltip>
+                                    );
+                                })()}
                                 <Tooltip title="Remove artist">
                                     <IconButton
                                         size="small"

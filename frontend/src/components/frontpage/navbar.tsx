@@ -1,4 +1,5 @@
 import {
+    Bell,
     Compass,
     Inbox,
     KeyRound,
@@ -10,14 +11,19 @@ import {
 } from 'lucide-react';
 import { MouseEvent, ReactElement, useRef, useState } from 'react';
 import {
+    Badge,
     Box,
     BoxProps,
     darken,
     Divider,
     IconButton,
+    List,
+    ListItem,
+    ListItemText,
     ListItemIcon,
     Menu,
     MenuItem,
+    Popover,
     Tooltip,
     Typography,
     useTheme,
@@ -35,6 +41,11 @@ import {
 
 import { clearToken, meQueryOptions } from '@/api/auth';
 import { queryClient } from '@/api/common';
+import {
+    markNotificationsSeen,
+    notificationCountQueryOptions,
+    notificationsQueryOptions,
+} from '@/api/notifications';
 
 export const NAVBAR_HEIGHT = {
     desktop: '48px',
@@ -220,6 +231,108 @@ function NavTabs() {
     );
 }
 
+function NotificationBell() {
+    const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+    const { data: countData } = useQuery(notificationCountQueryOptions());
+    const { data: notifications = [], refetch } = useQuery({
+        ...notificationsQueryOptions(),
+        enabled: Boolean(anchor),
+    });
+    const unseen = countData?.unseen ?? 0;
+    const navigate = useNavigate();
+
+    async function handleOpen(e: MouseEvent<HTMLElement>) {
+        setAnchor(e.currentTarget);
+        await refetch();
+    }
+
+    async function handleMarkAllSeen() {
+        await markNotificationsSeen();
+        void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    }
+
+    async function handleNotificationClick(artistName: string, notifId: string) {
+        setAnchor(null);
+        await markNotificationsSeen([notifId]);
+        void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+        void navigate({
+            to: '/library/browse/artists/$artist',
+            params: { artist: artistName },
+        });
+    }
+
+    return (
+        <>
+            <Tooltip title="New album notifications">
+                <IconButton size="small" onClick={handleOpen} sx={{ mr: 0.5 }}>
+                    <Badge badgeContent={unseen} color="error" max={99}>
+                        <Bell size={18} />
+                    </Badge>
+                </IconButton>
+            </Tooltip>
+            <Popover
+                open={Boolean(anchor)}
+                anchorEl={anchor}
+                onClose={() => setAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                slotProps={{ paper: { sx: { width: 340, maxHeight: 480 } } }}
+            >
+                <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Typography variant="subtitle2">New albums</Typography>
+                    {unseen > 0 && (
+                        <Typography
+                            variant="caption"
+                            sx={{ cursor: 'pointer', color: 'primary.main' }}
+                            onClick={handleMarkAllSeen}
+                        >
+                            Mark all seen
+                        </Typography>
+                    )}
+                </Box>
+                <Divider />
+                {notifications.length === 0 ? (
+                    <Box sx={{ px: 2, py: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                            No new releases yet.
+                        </Typography>
+                    </Box>
+                ) : (
+                    <List dense disablePadding>
+                        {notifications.map((n) => (
+                            <ListItem
+                                key={n.id}
+                                onClick={() => void handleNotificationClick(n.artist_name, n.id)}
+                                sx={{
+                                    opacity: n.seen ? 0.5 : 1,
+                                    alignItems: 'flex-start',
+                                    cursor: 'pointer',
+                                    '&:hover': { backgroundColor: 'action.hover' },
+                                    borderRadius: 1,
+                                }}
+                            >
+                                {n.album.cover_url && (
+                                    <Box
+                                        component="img"
+                                        src={n.album.cover_url}
+                                        sx={{ width: 40, height: 40, mr: 1.5, borderRadius: 1, flexShrink: 0, objectFit: 'cover' }}
+                                    />
+                                )}
+                                <ListItemText
+                                    primary={n.album.album ?? 'Unknown album'}
+                                    secondary={`${n.artist_name}${n.album.year ? ` · ${n.album.year}` : ''}`}
+                                    primaryTypographyProps={{ variant: 'body2', fontWeight: n.seen ? 400 : 600 }}
+                                    secondaryTypographyProps={{ variant: 'caption' }}
+                                />
+                            </ListItem>
+                        ))}
+                    </List>
+                )}
+            </Popover>
+        </>
+    );
+}
+
 function UserMenu() {
     const navigate = useNavigate();
     const { data: user } = useQuery(meQueryOptions());
@@ -324,9 +437,12 @@ export default function NavBar(props: BoxProps) {
             <NavTabs />
             <Box
                 sx={(theme) => ({
+                    display: 'flex',
+                    alignItems: 'center',
                     [theme.breakpoints.down('laptop')]: { display: 'none' },
                 })}
             >
+                <NotificationBell />
                 <UserMenu />
             </Box>
         </Box>

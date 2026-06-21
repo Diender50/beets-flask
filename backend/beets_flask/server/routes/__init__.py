@@ -26,10 +26,12 @@ def register_routes(app: FastAPI) -> None:
     from .library.stats import router as stats_router
     from .library.tags import router as tags_router
     from .monitor import router as monitor_router
+    from .notifications import router as notifications_router
     from .users import router as users_router
 
     app.include_router(auth_router, prefix=_API_PREFIX)
     app.include_router(users_router, prefix=_API_PREFIX)
+    app.include_router(notifications_router, prefix=_API_PREFIX)
     app.include_router(monitor_router, prefix=_API_PREFIX)
     app.include_router(config_router, prefix=_API_PREFIX)
     app.include_router(art_router, prefix=_API_PREFIX)

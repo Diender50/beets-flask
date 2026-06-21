@@ -30,6 +30,7 @@ python ./launch_redis_workers.py > /logs/redis_workers.log 2>&1
 
 # keeps running in the background
 python ./launch_watchdog_worker.py &
+python ./launch_notification_worker.py &
 
 redis-cli FLUSHALL >/dev/null 2>&1
 

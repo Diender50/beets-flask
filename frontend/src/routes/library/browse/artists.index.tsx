@@ -36,6 +36,12 @@ import {
     removeTrackedArtist,
 } from '@/api/discovery';
 import { meQueryOptions } from '@/api/auth';
+import {
+    followArtist,
+    followedArtistsQueryOptions,
+    notificationsQueryOptions,
+    unfollowArtist,
+} from '@/api/notifications';
 import { ArtistIcon } from '@/components/common/icons';
 import { Search } from '@/components/common/inputs/search';
 import { ArtistsTable } from '@/components/common/browser/artistsTable';
@@ -123,9 +129,32 @@ function ArtistsListWrapper({
     canAddArtist?: boolean;
 } & BoxProps) {
     const [filter, setFilter] = useState<string>('');
+    const [showFollowedOnly, setShowFollowedOnly] = useState(false);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [confirmRemove, setConfirmRemove] = useState<string[] | null>(null);
     const queryClient = useQueryClient();
+
+    const { data: unseenNotifications = [] } = useQuery(notificationsQueryOptions(true));
+    const newAlbumArtists = useMemo(
+        () => new Set(unseenNotifications.map((n) => n.artist_name.toLowerCase())),
+        [unseenNotifications]
+    );
+
+    const { data: followedNames_raw = [] } = useQuery(followedArtistsQueryOptions());
+    const followedNames = useMemo(
+        () => new Set(followedNames_raw.map((n) => n.toLowerCase())),
+        [followedNames_raw]
+    );
+
+    const followMutation = useMutation({
+        mutationFn: async ({ name, follow }: { name: string; follow: boolean }) => {
+            if (follow) await followArtist(name);
+            else await unfollowArtist(name);
+        },
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: ['notifications', 'followed'] });
+        },
+    });
 
     const removeMutation = useMutation({
         mutationFn: async (names: string[]) => {
@@ -139,11 +168,15 @@ function ArtistsListWrapper({
     });
 
     const filteredData = useMemo(() => {
-        if (!filter) return artists;
-        return artists.filter((item) =>
+        let result = artists;
+        if (filter) result = result.filter((item) =>
             item.artist?.toLowerCase().includes(filter.toLowerCase())
         );
-    }, [artists, filter]);
+        if (showFollowedOnly) result = result.filter((item) =>
+            followedNames.has((item.artist ?? '').toLowerCase())
+        );
+        return result;
+    }, [artists, filter, showFollowedOnly, followedNames]);
 
     const nRemovedByFilter = artists.length - filteredData.length;
 
@@ -296,6 +329,17 @@ function ArtistsListWrapper({
                         />
                     }
                     label={<Typography variant="caption" color="text.secondary">Album artists</Typography>}
+                    sx={{ m: 0 }}
+                />
+                <FormControlLabel
+                    control={
+                        <Switch
+                            size="small"
+                            checked={showFollowedOnly}
+                            onChange={(e) => setShowFollowedOnly(e.target.checked)}
+                        />
+                    }
+                    label={<Typography variant="caption" color="text.secondary">Followed</Typography>}
                     sx={{ m: 0, mr: 'auto' }}
                 />
                 <Box sx={{ display: 'flex', gap: 0.75 }}>
@@ -347,6 +391,12 @@ function ArtistsListWrapper({
                         removeMutation.isPending && (removeMutation.variables ?? []).includes(artistName)
                     }
                     disableActions={removeMutation.isPending}
+                    newAlbumArtists={newAlbumArtists}
+                    trackedNames={followedNames}
+                    onToggleFollow={(name, follow) => followMutation.mutate({ name, follow })}
+                    isFollowPending={(name) =>
+                        followMutation.isPending && followMutation.variables?.name === name
+                    }
                 />
             </Box>
 

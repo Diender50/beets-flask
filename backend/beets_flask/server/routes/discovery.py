@@ -1242,9 +1242,42 @@ async def remove_artist(name: str, lib: BeetsLib, _user: CurrentUser) -> dict:
     return {"ok": True, "albums_deleted": len(albums_to_delete)}
 
 
+@router.get("/artists/followed")
+async def list_followed_artists() -> list[str]:
+    """Return artist names subscribed to new-album notifications."""
+    from beets_flask.notifications import get_followed_artist_names
+    return get_followed_artist_names()
+
+
 @router.get("/artists/{name:path}/status")
 async def tracked_artist_status(name: str) -> dict:
-    return {"name": name, "tracked": is_tracked(name)}
+    from beets_flask.notifications import is_followed
+    return {"name": name, "tracked": is_tracked(name), "followed": is_followed(name)}
+
+
+@router.post("/artists/{name:path}/untrack")
+async def untrack_artist(name: str, _user: CurrentUser) -> dict:
+    """Remove artist from tracked list without touching the beets library."""
+    removed = remove_tracked_artist(name)
+    invalidate_missing_cache_for_string(name)
+    invalidate_artists_cache()
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/artists/{name:path}/follow")
+async def follow_artist_for_notifications(name: str, _user: CurrentUser) -> dict:
+    """Subscribe artist to new-album notifications. Does NOT affect tracked_artist table."""
+    from beets_flask.notifications import follow_artist
+    added = follow_artist(name)
+    return {"ok": True, "added": added, "followed": True}
+
+
+@router.post("/artists/{name:path}/unfollow")
+async def unfollow_artist_for_notifications(name: str, _user: CurrentUser) -> dict:
+    """Unsubscribe artist from new-album notifications. Does NOT affect tracked_artist table."""
+    from beets_flask.notifications import unfollow_artist
+    removed = unfollow_artist(name)
+    return {"ok": True, "removed": removed, "followed": False}
 
 
 # ─── Downloads ────────────────────────────────────────────────────────────────
