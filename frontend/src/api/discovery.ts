@@ -14,6 +14,34 @@ export const qualityPriorityQueryOptions = () =>
         staleTime: Infinity,
     });
 
+/* ─────────────────────── Provider Status ───────────────────────── */
+
+export interface ProviderStatus {
+    available: boolean;
+    base_url: string;
+    detail: string;
+}
+
+export interface ProvidersStatus {
+    deemix: ProviderStatus;
+    slskd: ProviderStatus;
+    squidwtf: ProviderStatus;
+    prowlarr: ProviderStatus;
+    qbittorrent: ProviderStatus;
+}
+
+export const providersStatusQueryOptions = () =>
+    queryOptions({
+        queryKey: ['providersStatus'],
+        queryFn: async (): Promise<ProvidersStatus> => {
+            const response = await fetch('/discovery/providers/status');
+            if (!response.ok) throw new Error('providers status failed');
+            return response.json() as Promise<ProvidersStatus>;
+        },
+        staleTime: 30_000,
+        refetchInterval: 60_000,
+    });
+
 /* ─────────────────────── Tracked Artists ───────────────────────── */
 
 export interface TrackedArtist {

@@ -1211,6 +1211,82 @@ def _build_schedule_payload(
 router = APIRouter(prefix="/discovery", tags=["discovery"])
 
 
+# ─── Provider status ──────────────────────────────────────────────────────────
+
+
+@router.get("/providers/status")
+async def get_providers_status() -> dict:
+    async def _get(url: str, headers: dict | None = None) -> tuple[bool, str]:
+        if not url:
+            return False, "Not configured"
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers or {}) as resp:
+                    if 200 <= resp.status < 300:
+                        return True, "Available"
+                    if resp.status == 401:
+                        return False, "Authentication failed — check API key"
+                    if resp.status == 403:
+                        return False, "Access denied (403)"
+                    if resp.status == 404:
+                        return False, f"Endpoint not found (404) — {url}"
+                    return False, f"HTTP {resp.status}"
+        except aiohttp.ClientConnectorError:
+            return False, "Connection refused — service not running?"
+        except TimeoutError:
+            return False, "Connection timed out"
+        except Exception as exc:
+            return False, f"Error: {exc}"
+
+    async def _qbit_login(base_url: str, username: str, password: str) -> tuple[bool, str]:
+        if not base_url:
+            return False, "Not configured"
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}/api/v2/auth/login",
+                    data={"username": username, "password": password},
+                ) as resp:
+                    if resp.status != 200:
+                        return False, f"HTTP {resp.status}"
+                    body = (await resp.text()).strip()
+                    if body == "Ok.":
+                        return True, "Available"
+                    return False, "Wrong credentials"
+        except aiohttp.ClientConnectorError:
+            return False, "Connection refused — service not running?"
+        except TimeoutError:
+            return False, "Connection timed out"
+        except Exception as exc:
+            return False, f"Error: {exc}"
+
+    ds = _deemix_settings()
+    ss = _slskd_settings()
+    sq = _squidwtf_settings()
+    ps = _prowlarr_settings()
+    qs = _qbit_settings()
+
+    results = await asyncio.gather(
+        _get(ds["base_url"]),
+        _get(f"{ss['base_url']}/api/v0/application" if ss["base_url"] else ""),
+        _get(sq["base_url"]),
+        _get(
+            f"{ps['base_url']}/api/v1/health" if ps["base_url"] else "",
+            {"X-Api-Key": ps["api_key"]} if ps.get("api_key") else None,
+        ),
+        _qbit_login(qs["base_url"], qs["username"], qs["password"]),
+    )
+
+    keys = ["deemix", "slskd", "squidwtf", "prowlarr", "qbittorrent"]
+    base_urls = [ds["base_url"], ss["base_url"], sq["base_url"], ps["base_url"], qs["base_url"]]
+    return {
+        k: {"available": ok, "base_url": url, "detail": detail}
+        for k, (ok, detail), url in zip(keys, results, base_urls)
+    }
+
+
 # ─── Quality ─────────────────────────────────────────────────────────────────
 
 

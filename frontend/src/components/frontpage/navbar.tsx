@@ -46,6 +46,7 @@ import {
     notificationCountQueryOptions,
     notificationsQueryOptions,
 } from '@/api/notifications';
+import { providersStatusQueryOptions } from '@/api/discovery';
 
 export const NAVBAR_HEIGHT = {
     desktop: '48px',
@@ -333,9 +334,18 @@ function NotificationBell() {
     );
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+    deemix: 'Deemix',
+    slskd: 'Slskd',
+    squidwtf: 'Squid.wtf',
+    prowlarr: 'Prowlarr',
+    qbittorrent: 'qBittorrent',
+};
+
 function UserMenu() {
     const navigate = useNavigate();
     const { data: user } = useQuery(meQueryOptions());
+    const { data: providers } = useQuery(providersStatusQueryOptions());
     const [anchor, setAnchor] = useState<HTMLElement | null>(null);
 
     function handleLogout() {
@@ -367,6 +377,54 @@ function UserMenu() {
                         {user?.username}
                     </Typography>
                 </MenuItem>
+                <Divider />
+                <MenuItem disabled sx={{ opacity: '1 !important', pb: 0 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        Providers
+                    </Typography>
+                </MenuItem>
+                {Object.entries(providers ?? {}).map(([key, status]) => (
+                    <Tooltip
+                        key={key}
+                        title={
+                            <Box>
+                                <Typography variant="caption" display="block" sx={{ fontWeight: 600 }}>
+                                    {PROVIDER_LABELS[key] ?? key}
+                                </Typography>
+                                {status.base_url && (
+                                    <Typography variant="caption" display="block" color="text.secondary">
+                                        {status.base_url}
+                                    </Typography>
+                                )}
+                                <Typography variant="caption" display="block">
+                                    {status.detail}
+                                </Typography>
+                            </Box>
+                        }
+                        placement="left"
+                        arrow
+                    >
+                        <MenuItem disabled sx={{ opacity: '1 !important', py: 0.25, pointerEvents: 'auto !important' as 'auto' }}>
+                            <Box
+                                sx={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    flexShrink: 0,
+                                    mr: 1.5,
+                                    bgcolor: status.available
+                                        ? 'success.main'
+                                        : status.base_url
+                                          ? 'error.main'
+                                          : 'action.disabled',
+                                }}
+                            />
+                            <Typography variant="caption">
+                                {PROVIDER_LABELS[key] ?? key}
+                            </Typography>
+                        </MenuItem>
+                    </Tooltip>
+                ))}
                 <Divider />
                 <MenuItem
                     onClick={() => {
