@@ -1047,9 +1047,15 @@ async def _probe_prowlarr(
                 "container": c.get("container"),
                 "kbps": c.get("kbps"),
                 "bit_depth": c.get("bit_depth"),
+                "sample_rate_khz": c.get("sample_rate_khz"),
+                "release_group": c.get("release_group"),
+                "year": c.get("year"),
                 "download_url": c.get("download_url"),
                 "magnet_url": c.get("magnet_url"),
                 "info_url": c.get("info_url"),
+                "score_title": c.get("title_score"),
+                "score_quality": c.get("tier_score"),
+                "score_seeders": c.get("seeder_score"),
                 "candidate": c,
             },
         )
@@ -1239,11 +1245,11 @@ async def get_providers_status() -> dict:
         except Exception as exc:
             return False, f"Error: {exc}"
 
-    async def _qbit_login(base_url: str, username: str, password: str) -> tuple[bool, str]:
+    async def _qbit_login(base_url: str, username: str, password: str, timeout: float = 5) -> tuple[bool, str]:
         if not base_url:
             return False, "Not configured"
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
+            timeout = aiohttp.ClientTimeout(total=timeout)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     f"{base_url}/api/v2/auth/login",
@@ -1270,13 +1276,16 @@ async def get_providers_status() -> dict:
 
     results = await asyncio.gather(
         _get(ds["base_url"]),
-        _get(f"{ss['base_url']}/api/v0/application" if ss["base_url"] else ""),
+        _get(
+            f"{ss['base_url']}/api/v0/application" if ss["base_url"] else "",
+            {"X-API-Key": ss["api_key"]} if ss.get("api_key") else None,
+        ),
         _get(sq["base_url"]),
         _get(
             f"{ps['base_url']}/api/v1/health" if ps["base_url"] else "",
             {"X-Api-Key": ps["api_key"]} if ps.get("api_key") else None,
         ),
-        _qbit_login(qs["base_url"], qs["username"], qs["password"]),
+        _qbit_login(qs["base_url"], qs["username"], qs["password"], timeout=10),
     )
 
     keys = ["deemix", "slskd", "squidwtf", "prowlarr", "qbittorrent"]

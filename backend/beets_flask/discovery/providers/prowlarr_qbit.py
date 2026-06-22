@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 from urllib.parse import quote
@@ -121,13 +122,13 @@ def parse_torrent_title(title: str) -> dict[str, Any]:
     }
 
 
-def score_candidate(candidate: dict, *, artist_hint: str, album_hint: str) -> float:
-    """Score a Prowlarr candidate 0.0–1.0.
+def score_candidate(candidate: dict, *, artist_hint: str, album_hint: str) -> dict[str, float]:
+    """Score a Prowlarr candidate 0.0–1.0. Returns score + component breakdown.
 
     Weights:
-        60% title match — uses parsed artist_album (noise-stripped) when available
-        30% seeders (normalized, saturates at 50)
-        10% quality tier
+        70% title match — uses parsed artist_album (noise-stripped) when available
+        20% quality tier
+        10% seeders (log scale, saturates at 100)
     """
     title = str(candidate.get("title") or "")
     match_text = str(candidate.get("artist_album") or title)
@@ -137,10 +138,18 @@ def score_candidate(candidate: dict, *, artist_hint: str, album_hint: str) -> fl
     query = _norm_text(f"{artist_hint} {album_hint}")
     title_score = fuzz.token_sort_ratio(_norm_text(match_text), query) / 100.0
 
-    seeder_score = min(seeders, 50) / 50.0
-    tier_score = _QUALITY_TIER.get(quality_token, 0.1)
+    # Log scale: 1 seeder=10%, 10=50%, 100=100% — avoids tanking good matches with few seeds
+    seeder_score = min(1.0, math.log1p(seeders) / math.log1p(100))
 
-    return round(0.60 * title_score + 0.30 * seeder_score + 0.10 * tier_score, 4)
+    tier_score = _QUALITY_TIER.get(quality_token, 0.05)
+
+    score = round(0.70 * title_score + 0.20 * tier_score + 0.10 * seeder_score, 4)
+    return {
+        "score": score,
+        "title_score": round(title_score, 3),
+        "seeder_score": round(seeder_score, 3),
+        "tier_score": round(tier_score, 3),
+    }
 
 
 def rank_candidates(
@@ -149,11 +158,11 @@ def rank_candidates(
     artist_hint: str,
     album_hint: str,
 ) -> list[dict]:
-    """Add 'score' to each candidate, sort descending, drop below 0.1."""
+    """Add score + breakdown to each candidate, sort descending, drop below 0.1."""
     scored = []
     for c in candidates:
         c = dict(c)
-        c["score"] = score_candidate(c, artist_hint=artist_hint, album_hint=album_hint)
+        c.update(score_candidate(c, artist_hint=artist_hint, album_hint=album_hint))
         scored.append(c)
     scored.sort(key=lambda x: float(x.get("score", 0)), reverse=True)
     return [c for c in scored if float(c.get("score", 0)) >= 0.1]

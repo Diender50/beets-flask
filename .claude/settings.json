@@ -18,7 +18,12 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(node /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/node_modules/typescript/bin/tsc --noEmit -p /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/tsconfig.json)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(grep -n \"score\\\\|prowlarr\\\\|DownloadSuggestion\\\\|candidate\\\\b\" /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx | grep -i \"score\\\\|torrent\\\\|prowlarr\\\\|suggestion\" | head -30)",
+      "Bash(sed -n '1360,1450p' /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx)",
+      "Bash(sed -n '1450,1530p' /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx)",
+      "Bash(grep -n \"^import\\\\|Tooltip\" /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx | head -30)",
+      "Bash(grep 'artists\\\\.$artist')"
     ]
   }
 }
