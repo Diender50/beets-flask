@@ -17,7 +17,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(node /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/node_modules/typescript/bin/tsc --noEmit -p /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/tsconfig.json)"
+      "Bash(node /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/node_modules/typescript/bin/tsc --noEmit -p /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/tsconfig.json)",
+      "Bash(python -c ' *)"
     ]
   }
 }

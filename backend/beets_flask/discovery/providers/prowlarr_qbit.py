@@ -35,58 +35,109 @@ _QUALITY_TIER: dict[str, float] = {
     "mp3:128": 0.15,
 }
 
-_FLAC_HIRES_RE = re.compile(
+_BRACKET_RE = re.compile(r"[\[\(][^\]\)]*[\]\)]")
+_YEAR_RE = re.compile(r"\b(19\d{2}|20[012]\d)\b")
+_CONTAINER_RE = re.compile(r"\b(FLAC|MP3|OPUS|OGG|AAC|WAV|AIFF|ALAC|WMA|M4A)\b", re.IGNORECASE)
+_SAMPLE_RATE_RE = re.compile(r"\b(\d{2,3}(?:\.\d+)?)\s*kHz\b", re.IGNORECASE)
+_BIT_DEPTH_RE = re.compile(r"\b(16|24|32)\s*[-\s]?bit\b|\b(16|24|32)BIT\b", re.IGNORECASE)
+_BITRATE_RE = re.compile(r"\b(320|256|192|128|96|64)\s*(?:kbps|kb/s)?\b", re.IGNORECASE)
+_HIRES_RE = re.compile(
     r"\b(24\s*[-–]?\s*bit|24bit|hi[\s\-]?res|hires|highr|96\s*khz|192\s*khz|88\.?2\s*khz)\b",
     re.IGNORECASE,
 )
-_FLAC_RE = re.compile(r"\bFLAC\b", re.IGNORECASE)
-_OPUS_RE = re.compile(r"\b(OPUS|OGG)\b", re.IGNORECASE)
-_MP3_RE = re.compile(r"\bMP3\b", re.IGNORECASE)
-_KBPS_RE = re.compile(r"\b(320|256|192|128|96|64)\s*(?:kbps|kb/s)?\b", re.IGNORECASE)
+_RELEASE_GROUP_RE = re.compile(r"[-.]([A-Z][A-Z0-9]{1,14})\s*$", re.IGNORECASE)
 
 
-def _infer_quality(title: str) -> dict[str, Any]:
-    """Infer audio quality from a torrent title string.
+def parse_torrent_title(title: str) -> dict[str, Any]:
+    """Parse a torrent title into structured metadata.
 
-    Returns dict with keys: container, kbps, bit_depth, quality_token.
+    Handles:
+    - Dot-separated:  "Artist.Album.Year.FLAC.[16BIT.44.1kHz]-GROUP"
+    - Space/dash:     "Artist - Album (Year) [FLAC 16bit]"
+    - Mixed:          "Artist - Album.Year.FLAC-GROUP"
+
+    Returns keys: artist_album, year, container, kbps, bit_depth,
+                  sample_rate_khz, release_group, quality_token.
     """
-    if _FLAC_RE.search(title):
-        if _FLAC_HIRES_RE.search(title):
-            return {"container": "FLAC", "kbps": None, "bit_depth": 24, "quality_token": "flac:24"}
-        return {"container": "FLAC", "kbps": None, "bit_depth": 16, "quality_token": "flac:16"}
+    scan = title + " " + " ".join(m.group(0) for m in _BRACKET_RE.finditer(title))
 
-    kbps_match = _KBPS_RE.search(title)
-    kbps = int(kbps_match.group(1)) if kbps_match else None
+    year_m = _YEAR_RE.search(title)
+    year = int(year_m.group(1)) if year_m else None
 
-    if _OPUS_RE.search(title):
-        token = f"opus:{kbps}" if kbps else "opus:320"
-        return {"container": "OPUS", "kbps": kbps or 320, "bit_depth": None, "quality_token": token}
+    container_m = _CONTAINER_RE.search(scan)
+    container = container_m.group(1).upper() if container_m else "unknown"
 
-    if _MP3_RE.search(title) or kbps is not None:
-        resolved_kbps = kbps or 128
-        token = f"mp3:{resolved_kbps}"
-        return {"container": "MP3", "kbps": resolved_kbps, "bit_depth": None, "quality_token": token}
+    sr_m = _SAMPLE_RATE_RE.search(scan)
+    sample_rate_khz = float(sr_m.group(1)) if sr_m else None
 
-    return {"container": "unknown", "kbps": None, "bit_depth": None, "quality_token": ""}
+    bd_m = _BIT_DEPTH_RE.search(scan)
+    bit_depth = int(bd_m.group(1) or bd_m.group(2)) if bd_m else None
+    if container == "FLAC" and bit_depth is None:
+        bit_depth = 24 if (_HIRES_RE.search(scan) or (sample_rate_khz and sample_rate_khz > 48)) else 16
+
+    kbps_m = _BITRATE_RE.search(scan)
+    kbps = int(kbps_m.group(1)) if kbps_m else None
+
+    if container == "FLAC":
+        quality_token = f"flac:{bit_depth or 16}"
+    elif container in ("OPUS", "OGG"):
+        quality_token = f"opus:{kbps or 320}"
+    elif container in ("MP3", "AAC", "WMA", "M4A"):
+        quality_token = f"mp3:{kbps or 128}"
+    else:
+        quality_token = ""
+
+    grp_m = _RELEASE_GROUP_RE.search(title)
+    release_group = grp_m.group(1) if grp_m else None
+
+    # Strip all metadata noise to get clean artist+album text.
+    # Release group removal must happen on original title before any substitution
+    # shifts string positions.
+    clean = title[: grp_m.start()] if grp_m else title
+    clean = _BRACKET_RE.sub(" ", clean)
+    clean = _YEAR_RE.sub(" ", clean)
+    clean = _CONTAINER_RE.sub(" ", clean)
+    clean = _BIT_DEPTH_RE.sub(" ", clean)
+    clean = _SAMPLE_RATE_RE.sub(" ", clean)
+    clean = _BITRATE_RE.sub(" ", clean)
+    clean = _HIRES_RE.sub(" ", clean)
+
+    # If dots/underscores outnumber spaces, they're word separators.
+    if clean.count(".") + clean.count("_") > clean.count(" "):
+        clean = clean.replace(".", " ").replace("_", " ")
+
+    clean = re.sub(r"\s*-\s*", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    return {
+        "artist_album": clean,
+        "year": year,
+        "container": container,
+        "kbps": kbps,
+        "bit_depth": bit_depth,
+        "sample_rate_khz": sample_rate_khz,
+        "release_group": release_group,
+        "quality_token": quality_token,
+    }
 
 
 def score_candidate(candidate: dict, *, artist_hint: str, album_hint: str) -> float:
     """Score a Prowlarr candidate 0.0–1.0.
 
     Weights:
-        60% title fuzzy match (token_sort_ratio vs "artist album")
+        60% title match — uses parsed artist_album (noise-stripped) when available
         30% seeders (normalized, saturates at 50)
         10% quality tier
     """
     title = str(candidate.get("title") or "")
+    match_text = str(candidate.get("artist_album") or title)
     seeders = _safe_int(candidate.get("seeders"), 0)
     quality_token = str(candidate.get("quality_token") or "")
 
     query = _norm_text(f"{artist_hint} {album_hint}")
-    title_score = fuzz.token_sort_ratio(_norm_text(title), query) / 100.0
+    title_score = fuzz.token_sort_ratio(_norm_text(match_text), query) / 100.0
 
     seeder_score = min(seeders, 50) / 50.0
-
     tier_score = _QUALITY_TIER.get(quality_token, 0.1)
 
     return round(0.60 * title_score + 0.30 * seeder_score + 0.10 * tier_score, 4)
@@ -148,11 +199,12 @@ async def search_album(
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
-        quality = _infer_quality(title)
+        parsed = parse_torrent_title(title)
         candidates.append({
             "provider": "prowlarr",
             "guid": str(item.get("guid") or ""),
             "title": title,
+            "artist_album": parsed["artist_album"],
             "download_url": item.get("downloadUrl") or item.get("link") or None,
             "magnet_url": item.get("magnetUrl") or None,
             "seeders": _safe_int(item.get("seeders"), 0),
@@ -160,10 +212,13 @@ async def search_album(
             "size": _safe_int(item.get("size"), 0),
             "indexer": str(item.get("indexer") or ""),
             "info_url": item.get("infoUrl") or None,
-            "container": quality["container"],
-            "kbps": quality["kbps"],
-            "bit_depth": quality["bit_depth"],
-            "quality_token": quality["quality_token"],
+            "container": parsed["container"],
+            "kbps": parsed["kbps"],
+            "bit_depth": parsed["bit_depth"],
+            "sample_rate_khz": parsed["sample_rate_khz"],
+            "release_group": parsed["release_group"],
+            "year": parsed["year"],
+            "quality_token": parsed["quality_token"],
         })
 
     log.info("prowlarr search query=%r found=%d", query, len(candidates))
