@@ -66,8 +66,6 @@ gui:
             api_key: ""
             # Prowlarr search categories (3000 = Audio). Comma-separated list of ints.
             categories: [3000]
-            # Inbox key/name/path where downloads should be written (e.g. Inbox3)
-            inbox_folder: ""
             timeout_seconds: 30
 
         qbittorrent:
@@ -76,6 +74,9 @@ gui:
             # qBittorrent WebUI credentials
             username: "admin"
             password: "adminadmin"
+            # qBittorrent category used for downloaded torrents.
+            # qBittorrent maps categories to save paths — configure the path there.
+            category: "music"
             timeout_seconds: 20
 
         auto_download:

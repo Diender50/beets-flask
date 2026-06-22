@@ -503,17 +503,16 @@ async def run_prowlarr_qbit_download(
     *,
     job_id: str,
     candidate: dict,
-    output_path: str,
     qbit_base_url: str,
     qbit_username: str,
     qbit_password: str,
+    qbit_category: str,
     qbit_timeout_seconds: int,
 ) -> None:
     title = str(candidate.get("title") or "")
     _update_job(
         job_id,
         status=DownloadStatus.DOWNLOADING,
-        output_path=output_path,
         stage="downloading",
         progress_message=f"Sending torrent to qBittorrent: {title}",
         selected_match={
@@ -527,10 +526,10 @@ async def run_prowlarr_qbit_download(
         },
     )
     log.info(
-        "prowlarr_qbit download start %s title=%r output=%s",
+        "prowlarr_qbit download start %s title=%r category=%s",
         _job_summary(job_id),
         title,
-        output_path,
+        qbit_category,
     )
 
     try:
@@ -539,7 +538,7 @@ async def run_prowlarr_qbit_download(
             qbit_username=qbit_username,
             qbit_password=qbit_password,
             candidate=candidate,
-            output_path=output_path,
+            category=qbit_category,
             timeout_seconds=qbit_timeout_seconds,
         )
         if ok:

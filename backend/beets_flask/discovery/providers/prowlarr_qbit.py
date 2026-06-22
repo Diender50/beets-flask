@@ -240,12 +240,13 @@ async def enqueue_download(
     qbit_username: str,
     qbit_password: str,
     candidate: dict,
-    output_path: str,
+    category: str = "music",
     timeout_seconds: float = 20,
 ) -> tuple[bool, str | None]:
     """Send a torrent to qBittorrent for download.
 
     Returns (True, None) on success, (False, error_reason) on failure.
+    Save path is managed by qBittorrent via the category configuration.
     """
     base = qbit_base_url.rstrip("/")
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
@@ -266,20 +267,19 @@ async def enqueue_download(
                 log.warning("qbittorrent login failed: %s", login_text[:200])
                 return False, f"qBittorrent login failed: {login_text.strip()[:100]}"
 
-            # Add torrent
+            # Add torrent — let qBittorrent resolve save path via category
             add_resp = await session.post(
                 f"{base}/api/v2/torrents/add",
                 data={
                     "urls": torrent_url,
-                    "savepath": output_path,
-                    "category": "music",
+                    "category": category,
                 },
             )
             add_text = await add_resp.text()
             if add_resp.status == 200 and add_text.strip() == "Ok.":
                 log.info(
-                    "qbittorrent enqueue ok title=%r output=%s",
-                    candidate.get("title"), output_path,
+                    "qbittorrent enqueue ok title=%r category=%s",
+                    candidate.get("title"), category,
                 )
                 return True, add_text.strip()
 

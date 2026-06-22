@@ -1415,6 +1415,13 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                         }
                                         return container;
                                     })();
+                                    const scoreBreakdown = isProwlarr ? (() => {
+                                        const st = Number(choice.details.score_title);
+                                        const sq = Number(choice.details.score_quality);
+                                        const ss = Number(choice.details.score_seeders);
+                                        if (isNaN(st) || isNaN(sq) || isNaN(ss)) return null;
+                                        return { st, sq, ss };
+                                    })() : null;
                                     const trackColor = trackMatchColor(resultTrackCount, expectedTrackCount);
                                     const speedColor = speedMatchColor(uploadSpeed, queueLength, hasFreeUploadSlot);
                                     const queueColor = queueMatchColor(queueLength);
@@ -1517,32 +1524,23 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                             <Tooltip
                                                 placement="left"
                                                 arrow
-                                                title={(() => {
-                                                    const d = choice.details;
-                                                    const st = typeof d.score_title === 'number' ? d.score_title : null;
-                                                    const sq = typeof d.score_quality === 'number' ? d.score_quality : null;
-                                                    const ss = typeof d.score_seeders === 'number' ? d.score_seeders : null;
-                                                    if (st === null && sq === null && ss === null) return '';
-                                                    const row = (label: string, val: number, weight: number) =>
-                                                        `${label}: ${(val * 100).toFixed(0)}%  ×${(weight * 100).toFixed(0)}% → ${(val * weight).toFixed(3)}`;
-                                                    return (
-                                                        <Box sx={{ fontFamily: 'monospace', fontSize: '0.7rem', lineHeight: 1.8 }}>
-                                                            {st !== null && <Box>{row('title  ', st, 0.70)}</Box>}
-                                                            {sq !== null && <Box>{row('quality', sq, 0.20)}</Box>}
-                                                            {ss !== null && <Box>{row('seeders', ss, 0.10)}</Box>}
-                                                            <Box sx={{ borderTop: 1, borderColor: 'divider', mt: 0.5, pt: 0.5 }}>
-                                                                total: {choice.score.toFixed(4)}
-                                                            </Box>
+                                                title={scoreBreakdown ? (
+                                                    <Box sx={{ fontFamily: 'monospace', fontSize: '0.7rem', lineHeight: 1.8 }}>
+                                                        <Box>title  : {(scoreBreakdown.st * 100).toFixed(0)}%  ×70% → {(scoreBreakdown.st * 0.70).toFixed(3)}</Box>
+                                                        <Box>quality: {(scoreBreakdown.sq * 100).toFixed(0)}%  ×20% → {(scoreBreakdown.sq * 0.20).toFixed(3)}</Box>
+                                                        <Box>seeders: {(scoreBreakdown.ss * 100).toFixed(0)}%  ×10% → {(scoreBreakdown.ss * 0.10).toFixed(3)}</Box>
+                                                        <Box sx={{ borderTop: 1, borderColor: 'divider', mt: 0.5, pt: 0.5 }}>
+                                                            total: {choice.score.toFixed(4)}
                                                         </Box>
-                                                    );
-                                                })()}
+                                                    </Box>
+                                                ) : ''}
                                             >
                                                 <Typography variant="caption" sx={{
                                                     fontSize: '0.65rem',
                                                     fontWeight: 600,
                                                     minWidth: 28,
                                                     textAlign: 'right',
-                                                    cursor: 'help',
+                                                    cursor: scoreBreakdown ? 'help' : 'default',
                                                     color: choice.score > 0.9 ? 'success.main' : choice.score > 0.6 ? 'warning.main' : 'error.main',
                                                 }}>
                                                     {choice.score.toFixed(2)}

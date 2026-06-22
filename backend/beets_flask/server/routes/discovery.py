@@ -226,6 +226,7 @@ def _qbit_settings() -> dict:
         "base_url": _cfg_str(base + ["base_url"]),
         "username": _cfg_str(base + ["username"], "admin"),
         "password": _cfg_str(base + ["password"], "adminadmin"),
+        "category": _cfg_str(base + ["category"], "music"),
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 20),
     }
 
@@ -586,10 +587,10 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
             run_prowlarr_qbit_download(
                 job_id=job["job_id"],
                 candidate=candidate,
-                output_path=output_path,
                 qbit_base_url=qcfg["base_url"],
                 qbit_username=qcfg["username"],
                 qbit_password=qcfg["password"],
+                qbit_category=qcfg["category"],
                 qbit_timeout_seconds=qcfg["timeout_seconds"],
             )
         )
