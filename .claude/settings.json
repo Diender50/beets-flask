@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"providers={Array.from\" /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx)",
+      "Read(//home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/**)",
+      "Bash(grep -n \"providerColor\\\\|provider.*color\\\\|deemix.*primary\\\\|squidwtf.*success\" /home/samuel/Sync/Dev/202605_beets-flask/beets-flask/frontend/src/routes/library/browse/artists.\\\\$artist.tsx | grep -v \"^11[0-9][0-9]\\\\|^12[0-9][0-9]\\\\|^13[0-9][0-9]\\\\|^14[0-9][0-9]\\\\|^15[0-9][0-9]\" | head -15)",
+      "Bash(cd /home/samuel/Sync/Dev/202605_beets-flask/beets-flask && which pnpm || ls /nix/store/*/bin/pnpm 2>/dev/null | head -3 || find /run /home -name pnpm -type f 2>/dev/null | head -3)",
+      "Read(//nix/store/**)",
+      "Read(//run/**)",
+      "Bash(ls /home/samuel/.nix-profile/bin/pnpm 2>/dev/null || ls /nix/var/nix/profiles/default/bin/pnpm 2>/dev/null || find /nix/store -name \"pnpm\" -maxdepth 4 -type f 2>/dev/null | head -3)",
+      "Read(//nix/var/nix/profiles/default/bin/**)",
+      "Bash(ruff check *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/beets_flask/discovery/providers/prowlarr_qbit.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/beets_flask/discovery/download.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(grep -n \"prowlarr\" frontend/src/api/discovery.ts frontend/src/routes/library/browse/artists.\\\\$artist.tsx | wc -l && echo \"refs found\")",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
+    ]
+  }
+}
