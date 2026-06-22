@@ -844,12 +844,13 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
     const [slskdLoading, setSlskdLoading] = useState(false);
     const [deemixLoading, setDeemixLoading] = useState(false);
     const [squidwtfLoading, setSquidwtfLoading] = useState(false);
+    const [prowlarrLoading, setProwlarrLoading] = useState(false);
     const [suggestionErrors, setSuggestionErrors] = useState<string[]>([]);
     const [errorProviders, setErrorProviders] = useState<Set<string>>(new Set());
     const [providerResultCount, setProviderResultCount] = useState<Partial<Record<string, number>>>({});
     const [hiddenProviders, setHiddenProviders] = useState<Set<string>>(new Set());
     const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set(['flac']));
-    const [retryTrigger, setRetryTrigger] = useState<{ provider: 'slskd' | 'deemix' | 'squidwtf'; cycle: number } | null>(null);
+    const [retryTrigger, setRetryTrigger] = useState<{ provider: 'slskd' | 'deemix' | 'squidwtf' | 'prowlarr'; cycle: number } | null>(null);
     const searchAbortRef = useRef<AbortController[] | null>(null);
 
     const cleanupSlskdSearchesForDialog = () => {
@@ -886,12 +887,13 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         const slskdCtrl = new AbortController();
         const deemixCtrl = new AbortController();
         const squidwtfCtrl = new AbortController();
+        const prowlarrCtrl = new AbortController();
         // cancelled guards against React Strict Mode's double-invocation:
         // the first effect run's async callbacks must not update state after
         // the cleanup fires and the second run starts fresh.
         let cancelled = false;
 
-        searchAbortRef.current = [slskdCtrl, deemixCtrl, squidwtfCtrl];
+        searchAbortRef.current = [slskdCtrl, deemixCtrl, squidwtfCtrl, prowlarrCtrl];
 
         setSuggestionChoices([]);
         setSuggestionErrors([]);
@@ -902,6 +904,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         setSlskdLoading(true);
         setDeemixLoading(true);
         setSquidwtfLoading(true);
+        setProwlarrLoading(true);
 
         const mergeChoices = (incoming: DownloadSuggestion[]) => {
             if (cancelled) return;
@@ -924,7 +927,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             .map((t: MissingAlbumTrack) => ({ title: t.title, duration: t.duration ?? undefined }));
 
         const runProvider = async (
-            provider: 'deemix' | 'squidwtf',
+            provider: 'deemix' | 'squidwtf' | 'prowlarr',
             signal: AbortSignal,
             setLoading: (v: boolean) => void,
         ) => {
@@ -1000,12 +1003,14 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         void runSlskd();
         void runProvider('deemix', deemixCtrl.signal, setDeemixLoading);
         void runProvider('squidwtf', squidwtfCtrl.signal, setSquidwtfLoading);
+        void runProvider('prowlarr', prowlarrCtrl.signal, setProwlarrLoading);
 
         return () => {
             cancelled = true;
             slskdCtrl.abort();
             deemixCtrl.abort();
             squidwtfCtrl.abort();
+            prowlarrCtrl.abort();
         };
     }, [open, searchCycle, artist, album.album]);
 
@@ -1016,7 +1021,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         const ctrl = new AbortController();
         let cancelled = false;
 
-        const setLoading = provider === 'slskd' ? setSlskdLoading : provider === 'deemix' ? setDeemixLoading : setSquidwtfLoading;
+        const setLoading = provider === 'slskd' ? setSlskdLoading : provider === 'deemix' ? setDeemixLoading : provider === 'squidwtf' ? setSquidwtfLoading : setProwlarrLoading;
         setSuggestionChoices((prev) => prev.filter((c) => c.provider !== provider));
         setProviderResultCount((prev: Partial<Record<string, number>>) => { const n = { ...prev }; delete n[provider]; return n; });
         setErrorProviders((prev) => { const n = new Set(prev); n.delete(provider); return n; });
@@ -1107,7 +1112,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
         return () => { cancelled = true; ctrl.abort(); };
     }, [retryTrigger, open, artist, album.album]);
 
-    const suggestionLoading = slskdLoading || deemixLoading || squidwtfLoading;
+    const suggestionLoading = slskdLoading || deemixLoading || squidwtfLoading || prowlarrLoading;
     const suggestionError = suggestionErrors.join(' | ');
 
     const visibleChoices = useMemo(() => suggestionChoices.filter((c) => {
@@ -1119,6 +1124,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
             const kbps = c.provider === 'slskd'
                 ? asNumber(c.details.meanAudioBitrateKbps)
                 : asNumber(c.details.kbps);
+            if (c.provider === 'prowlarr' && container === 'unknown') return false;
             if (!selectedTiers.has(resultTier(container, kbps))) return false;
         }
         return true;
@@ -1145,6 +1151,15 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                     squid_album_id: String(choice.details.squid_album_id ?? ''),
                     release_id: releaseId,
                     squid_quality: String(choice.details.quality ?? '27'),
+                });
+            }
+            if (choice.provider === 'prowlarr') {
+                return startDownload({
+                    album: album.album,
+                    artist: searchArtist,
+                    provider: 'prowlarr',
+                    candidate: choice.details.candidate as Record<string, unknown>,
+                    release_id: releaseId,
                 });
             }
             return startDownload({
@@ -1279,6 +1294,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                 { key: 'slskd' as const, loading: slskdLoading },
                                 { key: 'deemix' as const, loading: deemixLoading },
                                 { key: 'squidwtf' as const, loading: squidwtfLoading },
+                                { key: 'prowlarr' as const, loading: prowlarrLoading },
                             ]
                         ).map(({ key, loading }) => {
                             const hasError = errorProviders.has(key);
@@ -1292,7 +1308,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                     label={key}
                                     size="small"
                                     variant={loading || isHidden ? 'outlined' : 'filled'}
-                                    color={loading ? 'default' : hasError ? 'error' : isHidden ? 'default' : key === 'deemix' ? 'primary' : key === 'squidwtf' ? 'success' : 'secondary'}
+                                    color={loading ? 'default' : hasError ? 'error' : isHidden ? 'default' : key === 'deemix' ? 'primary' : key === 'squidwtf' ? 'success' : key === 'prowlarr' ? 'warning' : 'secondary'}
                                     icon={
                                         loading ? (
                                             <CircularProgress size={12} sx={{ ml: '6px !important' }} />
@@ -1356,7 +1372,9 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                         ? asNumber(choice.details.trackCount)
                                         : choice.provider === 'squidwtf'
                                             ? asNumber(choice.details.trackCount)
-                                            : asNumber(choice.details.audioFileCount);
+                                            : choice.provider === 'prowlarr'
+                                                ? null
+                                                : asNumber(choice.details.audioFileCount);
                                     const meanAudioBitrateKbps = choice.provider === 'slskd'
                                         ? asNumber(choice.details.meanAudioBitrateKbps)
                                         : null;
@@ -1367,17 +1385,19 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                         ? asNumber(choice.details.queueLength)
                                         : null;
                                     const hasFreeUploadSlot = Boolean(choice.details.hasFreeUploadSlot);
-                                    const container = choice.provider === 'deemix'
-                                        ? String(choice.details.container ?? '-')
-                                        : choice.provider === 'squidwtf'
-                                            ? String(choice.details.container ?? '-')
-                                        : String(choice.details.extension ?? '-').toUpperCase();
-                                    const kbps = choice.provider === 'deemix'
-                                        ? asNumber(choice.details.kbps)
-                                        : choice.provider === 'squidwtf'
-                                            ? asNumber(choice.details.kbps)
-                                        : meanAudioBitrateKbps;
+                                    const container = choice.provider === 'slskd'
+                                        ? String(choice.details.extension ?? '-').toUpperCase()
+                                        : String(choice.details.container ?? '-');
+                                    const kbps = choice.provider === 'slskd'
+                                        ? meanAudioBitrateKbps
+                                        : asNumber(choice.details.kbps);
                                     const isSlskd = choice.provider === 'slskd';
+                                    const isProwlarr = choice.provider === 'prowlarr';
+                                    const prowlarrSeeders = isProwlarr ? asNumber(choice.details.seeders) : null;
+                                    const prowlarrIndexer = isProwlarr ? String(choice.details.indexer ?? '') : null;
+                                    const prowlarrSizeGB = isProwlarr && asNumber(choice.details.size) > 0
+                                        ? (asNumber(choice.details.size) / 1e9).toFixed(2)
+                                        : null;
                                     const bitDepth = isSlskd ? asNumber(choice.details.bitDepth) : null;
                                     const qualityLabel = (() => {
                                         if (container === '-') return container;
@@ -1405,7 +1425,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                         ? (((choice.details.candidate as Record<string, unknown>)?.files as Array<Record<string, unknown>> | undefined) ?? [])
                                             .filter(f => audioExts.has(String(f.extension ?? '').toLowerCase().replace('.', '')))
                                         : [];
-                                    const providerColor = choice.provider === 'deemix' ? 'primary.main' : choice.provider === 'squidwtf' ? 'success.main' : 'secondary.main';
+                                    const providerColor = choice.provider === 'deemix' ? 'primary.main' : choice.provider === 'squidwtf' ? 'success.main' : choice.provider === 'prowlarr' ? 'warning.main' : 'secondary.main';
                                     return (
                                 <Box
                                     key={choiceKey}
@@ -1472,6 +1492,21 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                                                 {isSlskd && queueLength !== null && (
                                                     <Typography variant="caption" sx={{ color: queueColor }}>
                                                         Q:{queueLength}
+                                                    </Typography>
+                                                )}
+                                                {isProwlarr && prowlarrSeeders !== null && (
+                                                    <Typography variant="caption" sx={{ color: prowlarrSeeders >= 5 ? 'success.main' : prowlarrSeeders >= 1 ? 'warning.main' : 'error.main' }}>
+                                                        S:{prowlarrSeeders}
+                                                    </Typography>
+                                                )}
+                                                {isProwlarr && prowlarrIndexer && (
+                                                    <Typography variant="caption" color="text.disabled" noWrap>
+                                                        {prowlarrIndexer}
+                                                    </Typography>
+                                                )}
+                                                {isProwlarr && prowlarrSizeGB && (
+                                                    <Typography variant="caption" color="text.secondary">
+                                                        {prowlarrSizeGB} GB
                                                     </Typography>
                                                 )}
                                             </Box>
@@ -1563,7 +1598,7 @@ function DownloadButton({ album, artist, disabled: externalDisabled }: { album: 
                         </Alert>
                     ) : (
                         <Alert severity="warning" variant="outlined">
-                            No result found in deemix, squidwtf, or slskd.
+                            No result found in deemix, squidwtf, slskd, or prowlarr.
                         </Alert>
                     )}
                 </DialogContent>
@@ -1759,7 +1794,7 @@ function BatchDownloadDialog({
     const notFoundCount = statuses.filter((s) => s.phase === 'not_found').length;
 
     const activeProvider = (p: string) =>
-        p === 'deemix' ? 'primary.main' : p === 'squidwtf' ? 'success.main' : 'secondary.main';
+        p === 'deemix' ? 'primary.main' : p === 'squidwtf' ? 'success.main' : p === 'prowlarr' ? 'warning.main' : 'secondary.main';
 
     return (
         <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
@@ -1976,8 +2011,8 @@ function MissingAlbumsViewer({
 
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf'>>(
-        new Set(['deemix', 'slskd', 'squidwtf'])
+    const [batchProviders, setBatchProviders] = useState<Set<'deemix' | 'slskd' | 'squidwtf' | 'prowlarr'>>(
+        new Set(['deemix', 'slskd', 'squidwtf', 'prowlarr'])
     );
 
     const { data: qualityPriority = [] } = useQuery(qualityPriorityQueryOptions());
@@ -2176,7 +2211,7 @@ function MissingAlbumsViewer({
                         Provider
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                        {(['deemix', 'slskd', 'squidwtf'] as const).map((p) => {
+                        {(['deemix', 'slskd', 'squidwtf', 'prowlarr'] as const).map((p) => {
                             const on = batchProviders.has(p);
                             return (
                                 <Chip
@@ -2184,8 +2219,8 @@ function MissingAlbumsViewer({
                                     label={p}
                                     size="small"
                                     variant={on ? 'filled' : 'outlined'}
-                                    color={on ? 'primary' : 'default'}
-                                    onClick={() => setBatchProviders((prev: Set<'deemix' | 'slskd' | 'squidwtf'>) => {
+                                    color={on ? (p === 'prowlarr' ? 'warning' : 'primary') : 'default'}
+                                    onClick={() => setBatchProviders((prev: Set<'deemix' | 'slskd' | 'squidwtf' | 'prowlarr'>) => {
                                         const next = new Set(prev);
                                         on ? next.delete(p) : next.add(p);
                                         return next;

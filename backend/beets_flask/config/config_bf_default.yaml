@@ -59,6 +59,25 @@ gui:
             inbox_folder: ""
             timeout_seconds: 45
 
+        prowlarr:
+            # Prowlarr instance endpoint. Example: "http://prowlarr:9696"
+            base_url: "http://prowlarr:9696"
+            # Prowlarr API key (Settings → General → API Key)
+            api_key: ""
+            # Prowlarr search categories (3000 = Audio). Comma-separated list of ints.
+            categories: [3000]
+            # Inbox key/name/path where downloads should be written (e.g. Inbox3)
+            inbox_folder: ""
+            timeout_seconds: 30
+
+        qbittorrent:
+            # qBittorrent WebUI endpoint. Example: "http://qbittorrent:8080"
+            base_url: "http://qbittorrent:8080"
+            # qBittorrent WebUI credentials
+            username: "admin"
+            password: "adminadmin"
+            timeout_seconds: 20
+
         auto_download:
             # Minimum match score (0.0–1.0) for batch/auto downloads.
             # Results with a score strictly below this threshold are skipped;

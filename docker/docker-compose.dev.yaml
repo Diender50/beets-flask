@@ -43,6 +43,40 @@ services:
         networks:
             - beetsflask
 
+    prowlarr:
+        image: lscr.io/linuxserver/prowlarr:latest
+        container_name: prowlarr
+        restart: unless-stopped
+        environment:
+            PUID: 1000
+            PGID: 1000
+            TZ: Europe/Paris
+        volumes:
+            - prowlarr_config:/config
+        ports:
+            - "9696:9696"
+        networks:
+            - beetsflask
+
+    qbittorrent:
+        image: lscr.io/linuxserver/qbittorrent:latest
+        container_name: qbittorrent
+        restart: unless-stopped
+        environment:
+            PUID: 1000
+            PGID: 1000
+            TZ: Europe/Paris
+            WEBUI_PORT: 8080
+        volumes:
+            - qbittorrent_config:/config
+            - ../local/music/:/music/
+        ports:
+            - "8080:8080"
+            - "6881:6881"
+            - "6881:6881/udp"
+        networks:
+            - beetsflask
+
 networks:
     beetsflask:
         name: beetsflask
@@ -50,3 +84,5 @@ networks:
 volumes:
     frontend_node_modules:
     frontend_pnpm_store:
+    prowlarr_config:
+    qbittorrent_config:

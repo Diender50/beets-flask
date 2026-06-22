@@ -106,7 +106,7 @@ export type DownloadQuality = 'flac' | '320' | '128';
 
 export interface DownloadJob {
     job_id: string;
-    provider?: 'auto' | 'deemix' | 'slskd' | 'squidwtf';
+    provider?: 'auto' | 'deemix' | 'slskd' | 'squidwtf' | 'prowlarr';
     deezer_id: string;
     squid_album_id?: string | null;
     album: string;
@@ -126,7 +126,7 @@ export interface DownloadJob {
 }
 
 export interface DownloadSuggestion {
-    provider: 'deemix' | 'slskd' | 'squidwtf';
+    provider: 'deemix' | 'slskd' | 'squidwtf' | 'prowlarr';
     score: number;
     title: string;
     artist: string;
@@ -142,7 +142,7 @@ export interface DownloadSuggestionsResponse {
 export async function getDownloadSuggestions(opts: {
     album: string;
     artist: string;
-    provider?: 'deemix' | 'slskd' | 'squidwtf';
+    provider?: 'deemix' | 'slskd' | 'squidwtf' | 'prowlarr';
     expected_track_count?: number | null;
     expected_tracks?: Array<{ title: string; duration?: number }>;
     /** Phase 2 for slskd: search with original_name only (primary already returned). */
@@ -192,7 +192,7 @@ export async function getDownloadSuggestions(opts: {
 export async function startDownload(opts: {
     album: string;
     artist: string;
-    provider?: 'deemix' | 'slskd' | 'squidwtf';
+    provider?: 'deemix' | 'slskd' | 'squidwtf' | 'prowlarr';
     quality?: DownloadQuality;
     deezer_id?: string;
     squid_album_id?: string;
@@ -213,7 +213,7 @@ export async function startDownload(opts: {
 }
 
 export async function startBatchDownload(opts: {
-    providers: Array<'deemix' | 'slskd' | 'squidwtf'>;
+    providers: Array<'deemix' | 'slskd' | 'squidwtf' | 'prowlarr'>;
     qualities: DownloadQuality[];
     albums: Array<{
         album: string;
@@ -278,7 +278,7 @@ export interface ProbeAndQueueResult {
 export async function probeAndQueueDownload(opts: {
     album: string;
     artist: string;
-    providers?: Array<'deemix' | 'slskd' | 'squidwtf'>;
+    providers?: Array<'deemix' | 'slskd' | 'squidwtf' | 'prowlarr'>;
     qualities?: string[];
     release_id?: string;
     deezer_id?: string;

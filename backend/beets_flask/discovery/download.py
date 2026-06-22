@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from beets_flask.discovery.providers import deemix, slskd, squidwtf
+from beets_flask.discovery.providers import deemix, prowlarr_qbit, slskd, squidwtf
 
 from beets_flask.logger import log
 from beets_flask.redis import redis_conn
@@ -497,5 +497,82 @@ async def run_squidwtf_download(
             progress_message="Squidwtf download crashed",
         )
         log.exception("Unexpected error during squidwtf provider download")
+
+
+async def run_prowlarr_qbit_download(
+    *,
+    job_id: str,
+    candidate: dict,
+    output_path: str,
+    qbit_base_url: str,
+    qbit_username: str,
+    qbit_password: str,
+    qbit_timeout_seconds: int,
+) -> None:
+    title = str(candidate.get("title") or "")
+    _update_job(
+        job_id,
+        status=DownloadStatus.DOWNLOADING,
+        output_path=output_path,
+        stage="downloading",
+        progress_message=f"Sending torrent to qBittorrent: {title}",
+        selected_match={
+            "provider": "prowlarr",
+            "title": title,
+            "indexer": candidate.get("indexer"),
+            "seeders": candidate.get("seeders"),
+            "container": candidate.get("container"),
+            "kbps": candidate.get("kbps"),
+            "score": candidate.get("score"),
+        },
+    )
+    log.info(
+        "prowlarr_qbit download start %s title=%r output=%s",
+        _job_summary(job_id),
+        title,
+        output_path,
+    )
+
+    try:
+        ok, info = await prowlarr_qbit.enqueue_download(
+            qbit_base_url=qbit_base_url,
+            qbit_username=qbit_username,
+            qbit_password=qbit_password,
+            candidate=candidate,
+            output_path=output_path,
+            timeout_seconds=qbit_timeout_seconds,
+        )
+        if ok:
+            _update_job(
+                job_id,
+                status=DownloadStatus.DONE,
+                completed_at=_now_iso(),
+                stage="done",
+                progress_message="qBittorrent accepted torrent",
+                error=None,
+            )
+            log.info("prowlarr_qbit enqueued %s", _job_summary(job_id))
+            return
+
+        _update_job(
+            job_id,
+            status=DownloadStatus.ERROR,
+            error=info or "qBittorrent rejected torrent",
+            completed_at=_now_iso(),
+            stage="failed",
+            progress_message="qBittorrent rejected the torrent",
+        )
+        log.warning("prowlarr_qbit enqueue failed %s error=%s", _job_summary(job_id), info)
+
+    except Exception as exc:
+        _update_job(
+            job_id,
+            status=DownloadStatus.ERROR,
+            error=str(exc),
+            completed_at=_now_iso(),
+            stage="failed",
+            progress_message="prowlarr/qBittorrent download crashed",
+        )
+        log.exception("Unexpected error during prowlarr_qbit provider download")
 
 

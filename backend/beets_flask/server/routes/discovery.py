@@ -18,6 +18,7 @@ from beets_flask.discovery.download import (
     get_all_download_jobs,
     get_download_job,
     run_deemix_download,
+    run_prowlarr_qbit_download,
     run_slskd_download,
     run_squidwtf_download,
 )
@@ -29,6 +30,7 @@ from beets_flask.discovery.tracked_artists import (
     remove_tracked_artist,
 )
 from beets_flask.discovery.providers import deemix as deemix_provider
+from beets_flask.discovery.providers import prowlarr_qbit as prowlarr_qbit_provider
 from beets_flask.discovery.providers import slskd as slskd_provider
 from beets_flask.discovery.providers import squidwtf as squidwtf_provider
 from beets_flask.library_cache import (
@@ -199,6 +201,32 @@ def _squidwtf_settings() -> dict:
     return {
         "base_url": _cfg_str(base + ["base_url"], "https://qobuz.squid.wtf"),
         "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 45),
+    }
+
+
+def _prowlarr_settings() -> dict:
+    base = ["gui", "discovery", "prowlarr"]
+    raw_cats = _cfg_str(base + ["categories"], "3000")
+    try:
+        import json as _json
+        cats = _json.loads(raw_cats) if raw_cats.strip().startswith("[") else [int(c.strip()) for c in raw_cats.split(",") if c.strip()]
+    except Exception:
+        cats = [3000]
+    return {
+        "base_url": _cfg_str(base + ["base_url"]),
+        "api_key": _cfg_str(base + ["api_key"]) or "",
+        "categories": cats or [3000],
+        "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 30),
+    }
+
+
+def _qbit_settings() -> dict:
+    base = ["gui", "discovery", "qbittorrent"]
+    return {
+        "base_url": _cfg_str(base + ["base_url"]),
+        "username": _cfg_str(base + ["username"], "admin"),
+        "password": _cfg_str(base + ["password"], "adminadmin"),
+        "timeout_seconds": _cfg_int(base + ["timeout_seconds"], 20),
     }
 
 
@@ -541,7 +569,33 @@ async def _schedule_download_from_payload(data: dict) -> tuple[dict, int]:
         )
         return (job, 202)
 
-    return ({"error": "provider must be 'deemix', 'slskd' or 'squidwtf'"}, 400)
+    if provider == "prowlarr":
+        if not album.strip() and not artist.strip():
+            return ({"error": "artist or album required"}, 400)
+
+        pcfg = _prowlarr_settings()
+        qcfg = _qbit_settings()
+        candidate = data.get("candidate")
+        if not isinstance(candidate, dict):
+            return ({"error": "candidate dict required for prowlarr download"}, 400)
+        if not qcfg["base_url"]:
+            return ({"error": "qbittorrent base_url not configured"}, 503)
+
+        job = create_download_job(provider="prowlarr", album=album, artist=artist, release_id=release_id)
+        asyncio.ensure_future(
+            run_prowlarr_qbit_download(
+                job_id=job["job_id"],
+                candidate=candidate,
+                output_path=output_path,
+                qbit_base_url=qcfg["base_url"],
+                qbit_username=qcfg["username"],
+                qbit_password=qcfg["password"],
+                qbit_timeout_seconds=qcfg["timeout_seconds"],
+            )
+        )
+        return (job, 202)
+
+    return ({"error": "provider must be 'deemix', 'slskd', 'squidwtf' or 'prowlarr'"}, 400)
 
 
 async def _find_best_match_across_providers(
@@ -568,6 +622,7 @@ async def _find_best_match_across_providers(
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
     wcfg = _squidwtf_settings()
+    pcfg = _prowlarr_settings()
 
     deemix_id: str | None = str(album_payload.get("deezer_id", "")).strip() or None
     deemix_score: float = 1.0
@@ -623,6 +678,21 @@ async def _find_best_match_across_providers(
         except Exception as exc:
             log.debug("squidwtf search failed: %s", exc)
 
+    prowlarr_ranked: list[dict] = []
+    if "prowlarr" in providers and pcfg["base_url"] and pcfg["api_key"]:
+        try:
+            raw = await prowlarr_qbit_provider.search_album(
+                prowlarr_base_url=pcfg["base_url"],
+                prowlarr_api_key=pcfg["api_key"],
+                artist=artist,
+                album=album,
+                categories=pcfg["categories"],
+                timeout_seconds=pcfg["timeout_seconds"],
+            )
+            prowlarr_ranked = prowlarr_qbit_provider.rank_candidates(raw, artist_hint=artist, album_hint=album)
+        except Exception as exc:
+            log.debug("prowlarr search failed: %s", exc)
+
     for quality in quality_priority:
         results: list[tuple[float, dict]] = []
 
@@ -651,6 +721,25 @@ async def _find_best_match_across_providers(
                 })
                 results.append((1.0, payload))
 
+        if prowlarr_ranked and "prowlarr" in providers and pcfg["base_url"]:
+            matching = [
+                c for c in prowlarr_ranked
+                if _suggestion_matches_quality(
+                    {"provider": "prowlarr", "details": {
+                        "container": c.get("container", "").casefold(),
+                        "kbps": c.get("kbps"),
+                        "bit_depth": c.get("bit_depth"),
+                    }},
+                    quality,
+                )
+            ]
+            if matching:
+                best_c = matching[0]
+                score = float(best_c.get("score", 0.0))
+                payload = dict(album_payload)
+                payload.update({"provider": "prowlarr", "quality": quality, "candidate": best_c})
+                results.append((score, payload))
+
         if results:
             qualified = [(s, p) for s, p in results if s >= min_score]
             if not qualified:
@@ -670,6 +759,9 @@ async def _find_best_match_across_providers(
                 best_payload["_result_title"] = (candidate.get("folder", "").rsplit("/", 1)[-1]) or album
             elif selected_provider == "squidwtf":
                 best_payload["_result_title"] = squid_title or album
+            elif selected_provider == "prowlarr":
+                candidate = best_payload.get("candidate") or {}
+                best_payload["_result_title"] = str(candidate.get("title") or album)
             else:
                 best_payload["_result_title"] = album
             log.info(
@@ -905,6 +997,66 @@ async def _probe_squidwtf(
     return results
 
 
+async def _probe_prowlarr(
+    artist: str,
+    album: str,
+    original_name: str | None,
+    other_aliases: list[str],
+    pcfg: dict,
+) -> list[dict]:
+    if not pcfg["base_url"] or not pcfg["api_key"]:
+        return []
+
+    async def _try(q_artist: str) -> list[dict]:
+        return await prowlarr_qbit_provider.search_album(
+            prowlarr_base_url=pcfg["base_url"],
+            prowlarr_api_key=pcfg["api_key"],
+            artist=q_artist,
+            album=album,
+            categories=pcfg["categories"],
+            timeout_seconds=pcfg["timeout_seconds"],
+        )
+
+    candidates = await _try(artist)
+    log.info("probe_prowlarr artist=%r candidates=%d", artist, len(candidates))
+
+    if not candidates and original_name and original_name.casefold() != artist.casefold():
+        candidates = await _try(original_name)
+        log.info("probe_prowlarr original_name=%r candidates=%d", original_name, len(candidates))
+
+    if not candidates:
+        for alias in other_aliases:
+            candidates = await _try(alias)
+            log.info("probe_prowlarr alias=%r candidates=%d", alias, len(candidates))
+            if candidates:
+                break
+
+    ranked = prowlarr_qbit_provider.rank_candidates(candidates, artist_hint=artist, album_hint=album)
+    return [
+        _download_suggestion_summary(
+            provider="prowlarr",
+            score=float(c.get("score", 0.0)),
+            title=str(c.get("title") or album),
+            artist=artist,
+            details={
+                "guid": c.get("guid"),
+                "indexer": c.get("indexer"),
+                "seeders": c.get("seeders"),
+                "leechers": c.get("leechers"),
+                "size": c.get("size"),
+                "container": c.get("container"),
+                "kbps": c.get("kbps"),
+                "bit_depth": c.get("bit_depth"),
+                "download_url": c.get("download_url"),
+                "magnet_url": c.get("magnet_url"),
+                "info_url": c.get("info_url"),
+                "candidate": c,
+            },
+        )
+        for c in ranked[:20]
+    ]
+
+
 # ─── Auto-selection helpers (probe_and_queue) ────────────────────────────────
 
 
@@ -962,11 +1114,32 @@ def _suggestion_matches_quality(sugg: dict, quality: str) -> bool:
                 pass
         return True
 
+    if provider == "prowlarr":
+        inferred_container = str(details.get("container") or "").casefold()
+        if inferred_container == "unknown":
+            return False
+        if container == "flac":
+            if inferred_container not in ("flac",):
+                return False
+            if spec == "24":
+                bit_depth = details.get("bit_depth")
+                return bool(bit_depth and int(bit_depth) >= 24)
+            return True
+        if inferred_container != container:
+            return False
+        kbps = details.get("kbps")
+        if kbps is not None and spec:
+            try:
+                return _lossy_tier(container, float(kbps)) >= _lossy_tier(container, float(spec))
+            except (ValueError, TypeError):
+                pass
+        return True
+
     return False
 
 
 # Higher value = higher priority in max() comparisons.
-_PROVIDER_PRIORITY: dict[str, int] = {"squidwtf": 2, "deemix": 1, "slskd": 0}
+_PROVIDER_PRIORITY: dict[str, int] = {"squidwtf": 2, "deemix": 1, "slskd": 0, "prowlarr": 0}
 
 
 def _suggestion_sort_key(s: dict) -> tuple[float, int, float]:
@@ -1026,6 +1199,8 @@ def _build_schedule_payload(
         payload["squid_album_id"] = str(details.get("squid_album_id") or "")
         payload["squid_quality"] = str(details.get("quality") or "27")
     elif provider == "slskd":
+        payload["candidate"] = details.get("candidate")
+    elif provider == "prowlarr":
         payload["candidate"] = details.get("candidate")
 
     return payload
@@ -1299,7 +1474,7 @@ async def start_download_batch(data: dict[str, Any] = Body(default_factory=dict)
 
     providers_raw = data.get("providers", [])
     providers = [str(p).strip().casefold() for p in (providers_raw if isinstance(providers_raw, list) else [])]
-    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf")] or ["deemix", "slskd", "squidwtf"]
+    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf", "prowlarr")] or ["deemix", "slskd", "squidwtf", "prowlarr"]
 
     qualities_raw = data.get("qualities") or None
     qualities: list[str] | None = None
@@ -1364,7 +1539,7 @@ async def probe_and_queue(data: dict[str, Any] = Body(default_factory=dict)):
 
     providers_raw = data.get("providers", [])
     providers = [str(p).strip().casefold() for p in (providers_raw if isinstance(providers_raw, list) else [])]
-    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf")] or ["deemix", "slskd", "squidwtf"]
+    providers = [p for p in providers if p in ("deemix", "slskd", "squidwtf", "prowlarr")] or ["deemix", "slskd", "squidwtf", "prowlarr"]
 
     qualities_raw = data.get("qualities") or None
     qualities: list[str] | None = None
@@ -1384,6 +1559,7 @@ async def probe_and_queue(data: dict[str, Any] = Body(default_factory=dict)):
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
     wcfg = _squidwtf_settings()
+    pcfg = _prowlarr_settings()
 
     # Run all selected providers in parallel; wait for ALL before selecting.
     provider_tasks: list[tuple[str, asyncio.Task]] = []
@@ -1401,6 +1577,10 @@ async def probe_and_queue(data: dict[str, Any] = Body(default_factory=dict)):
     if "squidwtf" in providers:
         provider_tasks.append(("squidwtf", asyncio.create_task(
             _probe_squidwtf(artist, album, original_name, other_aliases, wcfg)
+        )))
+    if "prowlarr" in providers:
+        provider_tasks.append(("prowlarr", asyncio.create_task(
+            _probe_prowlarr(artist, album, original_name, other_aliases, pcfg)
         )))
 
     all_suggestions: list[dict] = []
@@ -1503,17 +1683,18 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
 
     if not artist and not album:
         raise HTTPException(status_code=400, detail="artist or album required")
-    if provider_filter and provider_filter not in ("deemix", "slskd", "squidwtf"):
-        raise HTTPException(status_code=400, detail="provider must be 'deemix', 'slskd' or 'squidwtf' when set")
+    if provider_filter and provider_filter not in ("deemix", "slskd", "squidwtf", "prowlarr"):
+        raise HTTPException(status_code=400, detail="provider must be 'deemix', 'slskd', 'squidwtf' or 'prowlarr' when set")
 
     dcfg = _deemix_settings()
     scfg = _slskd_settings()
     wcfg = _squidwtf_settings()
+    pcfg = _prowlarr_settings()
     _fallbacks = _get_artist_search_fallbacks(artist)
     artist_original_name: str | None = _fallbacks["original_name"]
     artist_other_aliases: list[str] = _fallbacks["other_aliases"]
 
-    deemix_opts = slskd_opts = squidwtf_opts = []
+    deemix_opts = slskd_opts = squidwtf_opts = prowlarr_opts = []
     if provider_filter == "deemix":
         try:
             deemix_opts = await _probe_deemix(artist, album, artist_original_name, artist_other_aliases, dcfg)
@@ -1536,6 +1717,11 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
             squidwtf_opts = await _probe_squidwtf(artist, album, artist_original_name, artist_other_aliases, wcfg)
         except Exception as exc:
             log.warning("probe_squidwtf failed: %r", exc)
+    elif provider_filter == "prowlarr":
+        try:
+            prowlarr_opts = await _probe_prowlarr(artist, album, artist_original_name, artist_other_aliases, pcfg)
+        except Exception as exc:
+            log.warning("probe_prowlarr failed: %r", exc)
     else:
         deemix_task = asyncio.create_task(_probe_deemix(artist, album, artist_original_name, artist_other_aliases, dcfg))
         slskd_task = asyncio.create_task(_probe_slskd(
@@ -1545,6 +1731,7 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
             run_original_name=False,
         ))
         squidwtf_task = asyncio.create_task(_probe_squidwtf(artist, album, artist_original_name, artist_other_aliases, wcfg))
+        prowlarr_task = asyncio.create_task(_probe_prowlarr(artist, album, artist_original_name, artist_other_aliases, pcfg))
         try:
             slskd_opts = await slskd_task
         except Exception as exc:
@@ -1557,8 +1744,12 @@ async def download_options(data: dict[str, Any] = Body(default_factory=dict)):
             squidwtf_opts = await asyncio.wait_for(squidwtf_task, timeout=0.75)
         except (asyncio.TimeoutError, Exception) as exc:
             squidwtf_task.cancel()
+        try:
+            prowlarr_opts = await asyncio.wait_for(prowlarr_task, timeout=30.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            prowlarr_task.cancel()
 
-    results = sorted([*deemix_opts, *slskd_opts, *squidwtf_opts], key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    results = sorted([*deemix_opts, *slskd_opts, *squidwtf_opts, *prowlarr_opts], key=lambda x: float(x.get("score") or 0.0), reverse=True)
     return {"artist": artist, "album": album, "results": results}
 
 
